@@ -1,0 +1,11 @@
+# Godot 4 editor cache — regenerated on open
+.godot/
+
+# Exports
+/build/
+/android/build/
+
+# OS / editor noise
+*.tmp
+.DS_Store
+Thumbs.db

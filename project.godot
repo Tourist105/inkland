@@ -1,0 +1,31 @@
+; Engine configuration file.
+; Open with Godot 4.6+ (free download at https://godotengine.org).
+;
+; First run: open this file in Godot, then F5 to play.
+; For Android: install the Android export template (Editor > Manage Export
+; Templates), set SDK paths in Editor Settings, then Project > Export.
+
+config_version=5
+
+[application]
+
+config/name="Inkland"
+config/description="Claim the arena. Leave your trail, close the loop, paint the map your colour — but don't let anyone cross your line. An original take on the territory-capture arena."
+run/main_scene="res://scenes/Main.tscn"
+config/features=PackedStringArray("4.6", "Mobile")
+config/icon="res://icon.svg"
+boot_splash/bg_color=Color(0.12, 0.13, 0.16, 1)
+boot_splash/show_image=false
+
+[display]
+
+window/size/viewport_width=720
+window/size/viewport_height=1280
+window/stretch/mode="viewport"
+window/stretch/aspect="keep_height"
+window/handheld/orientation=1            ; 0 landscape, 1 portrait
+
+[rendering]
+
+renderer/rendering_method="mobile"
+textures/canvas_textures/default_texture_filter=0   ; nearest, crisp flat blocks
