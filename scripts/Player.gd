@@ -20,3 +20,9 @@ var is_out: bool = false
 var trail: Array[Vector2i] = []
 
 var respawn_in: float = 0.0
+
+## Visual interpolation: previous cell the head occupied last tick.
+## The renderer lerps from (prev_cx, prev_cy) to (cx, cy) across one TICK so
+## movement reads as fluid even though the sim is locked to the grid.
+var prev_cx: int = 0
+var prev_cy: int = 0

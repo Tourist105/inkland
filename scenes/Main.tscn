@@ -1,17 +1,67 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://scripts/Arena.gd" id="1_arena"]
 
+[sub_resource type="StyleBoxFlat" id="panel_style"]
+bg_color = Color(1, 1, 1, 0.82)
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
+corner_radius_top_left = 14
+corner_radius_top_right = 14
+corner_radius_bottom_right = 14
+corner_radius_bottom_left = 14
+shadow_color = Color(0, 0, 0, 0.15)
+shadow_size = 6
+
+[sub_resource type="StyleBoxFlat" id="track_style"]
+bg_color = Color(0.85, 0.88, 0.92, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+
 [node name="Arena" type="Node2D"]
 script = ExtResource("1_arena")
+
+[node name="Camera2D" type="Camera2D" parent="."]
 
 [node name="HUD" type="CanvasLayer" parent="."]
 
 [node name="Info" type="Label" parent="HUD"]
 offset_left = 16.0
-offset_top = 16.0
+offset_top = 88.0
 offset_right = 704.0
-offset_bottom = 64.0
-theme_override_font_sizes/font_size = 30
-text = "YOU  RED  GREEN"
+offset_bottom = 124.0
+theme_override_font_sizes/font_size = 26
+text = "RED  MINT"
 horizontal_alignment = 1
+
+[node name="Panel" type="PanelContainer" parent="HUD"]
+offset_left = 240.0
+offset_top = 18.0
+offset_right = 480.0
+offset_bottom = 78.0
+theme_override_styles/panel = SubResource("panel_style")
+
+[node name="VBox" type="VBoxContainer" parent="HUD/Panel"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="PctLabel" type="Label" parent="HUD/Panel/VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 22
+text = "YOU  0.0%"
+horizontal_alignment = 1
+
+[node name="Bar" type="PanelContainer" parent="HUD/Panel/VBox"]
+custom_minimum_size = Vector2(220, 16)
+layout_mode = 2
+theme_override_styles/panel = SubResource("track_style")
+
+[node name="Fill" type="ColorRect" parent="HUD/Panel/VBox/Bar"]
+custom_minimum_size = Vector2(0, 16)
+layout_mode = 2
+size_flags_horizontal = 0
+color = Color(0.2, 0.55, 1, 1)

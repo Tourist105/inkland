@@ -9,15 +9,23 @@ extends Node2D
 ##
 ## This is the legal, original re-implementation of the territory-capture
 ## mechanic — own code, own art. No assets or trade dress from any other app.
+##
+## Rendering notes: the simulation runs on a fixed grid tick. The view is a
+## Camera2D that smoothly chases the human head, so you play zoomed in on your
+## character rather than seeing the whole board. Heads + trail-fronts are lerped
+## between grid cells across each tick so motion looks fluid, not steppy.
 
 const InkPlayer = preload("res://scripts/Player.gd")
 
-const W := 36
-const H := 64
+const W := 56
+const H := 96
 const CELL := 20.0
-const TICK := 0.08          # seconds the head spends crossing one cell
+const TICK := 0.10          # seconds the head spends crossing one cell
 const RESPAWN := 1.6
 const START_RADIUS := 2
+
+const CAM_ZOOM := 2.6       # >1 zooms in (paper.io-style close view)
+const CAM_LERP := 6.0       # camera follow stiffness
 
 var grid: PackedByteArray          # owner id per cell, 0 = neutral
 var trail_owner: PackedByteArray   # active-trail owner per cell, 0 = none
@@ -26,7 +34,22 @@ var human: InkPlayer
 var _accum := 0.0
 var _swipe_start := Vector2.ZERO
 
+# A vibrant-but-original flat palette. Index 0 = neutral (unused as a fill).
+var _palette := [
+	Color(0.20, 0.55, 1.00),   # human  — azure
+	Color(1.00, 0.42, 0.42),   # bot 1  — coral
+	Color(0.30, 0.82, 0.55),   # bot 2  — mint
+]
+# Background & grid tones for a clean modern look.
+const BG_TOP := Color(0.96, 0.97, 0.99)
+const BG_BOT := Color(0.90, 0.93, 0.97)
+const GRID_LINE := Color(0.0, 0.0, 0.0, 0.045)
+const VOID := Color(0.78, 0.81, 0.86)   # outside-the-board frame
+
+@onready var cam: Camera2D = $Camera2D
 @onready var info: Label = $HUD/Info
+@onready var pct_fill: ColorRect = $HUD/Panel/VBox/Bar/Fill
+@onready var pct_label: Label = $HUD/Panel/VBox/PctLabel
 
 func _ready() -> void:
 	grid = PackedByteArray()
@@ -34,6 +57,11 @@ func _ready() -> void:
 	trail_owner = PackedByteArray()
 	trail_owner.resize(W * H)
 	_spawn_players()
+	if cam != null:
+		cam.zoom = Vector2(CAM_ZOOM, CAM_ZOOM)
+		cam.position = _cell_center(human.cx, human.cy)
+		cam.make_current()
+	_tint_hud()
 	_update_info()
 
 func idx(x: int, y: int) -> int:
@@ -45,19 +73,17 @@ func in_bounds(x: int, y: int) -> bool:
 func _player(id: int) -> InkPlayer:
 	return players[id - 1]
 
+func _cell_center(x: int, y: int) -> Vector2:
+	return Vector2(x * CELL + CELL * 0.5, y * CELL + CELL * 0.5)
+
 # ---------------------------------------------------------------- spawning ---
 
 func _spawn_players() -> void:
-	var palette := [
-		Color(0.20, 0.55, 1.00),   # human  — blue
-		Color(1.00, 0.36, 0.36),   # bot 1  — red
-		Color(0.33, 0.85, 0.47),   # bot 2  — green
-	]
-	var homes := [Vector2i(W / 2, H - 9), Vector2i(7, 9), Vector2i(W - 8, 12)]
+	var homes := [Vector2i(W / 2, H - 12), Vector2i(9, 12), Vector2i(W - 10, 16)]
 	for i in 3:
 		var p := InkPlayer.new()
 		p.id = i + 1
-		p.color = palette[i]
+		p.color = _palette[i]
 		p.is_human = (i == 0)
 		p.home = homes[i]
 		players.append(p)
@@ -68,6 +94,8 @@ func _respawn(p: InkPlayer) -> void:
 	p.alive = true
 	p.cx = p.home.x
 	p.cy = p.home.y
+	p.prev_cx = p.cx
+	p.prev_cy = p.cy
 	p.dir = Vector2i.UP if p.is_human else Vector2i.DOWN
 	p.pending_dir = Vector2i.ZERO
 	p.is_out = false
@@ -85,7 +113,12 @@ func _process(delta: float) -> void:
 	while _accum >= TICK:
 		_accum -= TICK
 		_tick()
+	_update_camera(delta)
 	queue_redraw()
+
+## 0..1 progress of the current head through the cell it is moving into.
+func _tick_alpha() -> float:
+	return clampf(_accum / TICK, 0.0, 1.0)
 
 func _tick() -> void:
 	for p in players:
@@ -103,6 +136,10 @@ func _step(p: InkPlayer) -> void:
 	if p.pending_dir != Vector2i.ZERO and p.pending_dir != -p.dir:
 		p.dir = p.pending_dir
 	p.pending_dir = Vector2i.ZERO
+
+	# Record where we were, for visual interpolation this tick.
+	p.prev_cx = p.cx
+	p.prev_cy = p.cy
 
 	var nx := p.cx + p.dir.x
 	var ny := p.cy + p.dir.y
@@ -236,6 +273,22 @@ func _input(event: InputEvent) -> void:
 				human.pending_dir = Vector2i.DOWN if d.y > 0.0 else Vector2i.UP
 			_swipe_start = event.position
 
+# ------------------------------------------------------------------- camera --
+
+func _update_camera(delta: float) -> void:
+	if cam == null or human == null:
+		return
+	# Follow the human's *interpolated* head so the camera glides.
+	var target := _head_visual(human)
+	var t := clampf(CAM_LERP * delta, 0.0, 1.0)
+	cam.position = cam.position.lerp(target, t)
+
+## The smoothed on-screen position of a player's head this frame.
+func _head_visual(p: InkPlayer) -> Vector2:
+	var from := _cell_center(p.prev_cx, p.prev_cy)
+	var to := _cell_center(p.cx, p.cy)
+	return from.lerp(to, _tick_alpha())
+
 # ------------------------------------------------------------------- render --
 
 func _update_info() -> void:
@@ -244,27 +297,136 @@ func _update_info() -> void:
 		counts[grid[i]] += 1
 	var total := float(W * H)
 	if info != null:
-		info.text = "YOU %.1f%%    RED %.1f%%    GREEN %.1f%%" % [
-			counts[1] / total * 100.0,
+		info.text = "RED %.1f%%    MINT %.1f%%" % [
 			counts[2] / total * 100.0,
 			counts[3] / total * 100.0,
 		]
+	var you: float = float(counts[1]) / total * 100.0
+	if pct_label != null:
+		pct_label.text = "YOU  %.1f%%" % you
+	if pct_fill != null:
+		# Bar fill width tracks the human's share (0..100% of a 220px track).
+		pct_fill.custom_minimum_size = Vector2(220.0 * clampf(you / 100.0, 0.0, 1.0), 16.0)
+
+func _tint_hud() -> void:
+	if info != null:
+		info.add_theme_color_override("font_color", Color(0.20, 0.23, 0.30))
+	if pct_label != null:
+		pct_label.add_theme_color_override("font_color", _palette[0].darkened(0.15))
+	if pct_fill != null:
+		pct_fill.color = _palette[0]
 
 func _draw() -> void:
-	draw_rect(Rect2(0, 0, W * CELL, H * CELL), Color(0.12, 0.13, 0.16))
+	var board := Rect2(0, 0, W * CELL, H * CELL)
+	# Void frame behind/around the board.
+	draw_rect(Rect2(-CELL * 4, -CELL * 4, board.size.x + CELL * 8, board.size.y + CELL * 8), VOID)
+	# Soft vertical gradient background for the playfield.
+	_draw_vgradient(board, BG_TOP, BG_BOT)
+
+	# Territory fills (flat) plus a darker outline on each region's exposed
+	# edges — gives a clean, modern, slightly rounded silhouette.
 	for y in range(H):
 		for x in range(W):
 			var o := grid[idx(x, y)]
-			if o != 0:
-				var col: Color = players[o - 1].color
-				col.a = 0.55
-				draw_rect(Rect2(x * CELL, y * CELL, CELL, CELL), col)
+			if o == 0:
+				continue
+			var base: Color = players[o - 1].color
+			var fill := base
+			fill.a = 0.88
+			draw_rect(Rect2(x * CELL, y * CELL, CELL, CELL), fill)
+	_draw_region_outlines()
+
+	# Subtle grid lines for the paper-grid feel (drawn over fills, faint).
+	for x in range(W + 1):
+		draw_line(Vector2(x * CELL, 0), Vector2(x * CELL, H * CELL), GRID_LINE, 1.0)
+	for y in range(H + 1):
+		draw_line(Vector2(0, y * CELL), Vector2(W * CELL, y * CELL), GRID_LINE, 1.0)
+
+	# Active trails: bright, rounded, slightly inset.
 	for i in trail_owner.size():
 		var t := trail_owner[i]
 		if t != 0:
-			draw_rect(Rect2((i % W) * CELL, (i / W) * CELL, CELL, CELL), players[t - 1].color)
+			var c: Color = players[t - 1].color
+			var x := i % W
+			var y := i / W
+			var pad := CELL * 0.14
+			_draw_rounded(Rect2(x * CELL + pad, y * CELL + pad, CELL - pad * 2, CELL - pad * 2), c, CELL * 0.28)
+
+	# Heads — interpolated, with a soft drop shadow and (for the human) a face.
 	for p in players:
 		if p.alive:
-			var c := Vector2(p.cx * CELL + CELL * 0.5, p.cy * CELL + CELL * 0.5)
-			draw_circle(c, CELL * 0.55, p.color)
-			draw_circle(c, CELL * 0.55, Color(0, 0, 0, 0.5), false, 2.0)
+			_draw_head(p)
+
+func _draw_head(p: InkPlayer) -> void:
+	var c := _head_visual(p)
+	var r := CELL * 0.6
+	# Shadow.
+	draw_circle(c + Vector2(0, r * 0.18), r, Color(0, 0, 0, 0.16))
+	# Body.
+	draw_circle(c, r, p.color)
+	draw_circle(c, r, p.color.lightened(0.25), false, 2.5)
+	if p.is_human:
+		_draw_face(c, r, p.dir)
+
+## Two simple eyes that look in the direction of travel — original, genre-typical.
+func _draw_face(c: Vector2, r: float, dir: Vector2i) -> void:
+	var look := Vector2(dir.x, dir.y)
+	if look == Vector2.ZERO:
+		look = Vector2.UP
+	# Perpendicular axis to place the two eyes side by side.
+	var perp := Vector2(-look.y, look.x)
+	var eye_off := perp * r * 0.42
+	var fwd := look * r * 0.18
+	var eye_r := r * 0.30
+	var pupil_r := r * 0.15
+	var pupil_shift := look * eye_r * 0.45
+	for s: float in [1.0, -1.0]:
+		var ec: Vector2 = c + eye_off * s + fwd
+		draw_circle(ec, eye_r, Color.WHITE)
+		draw_circle(ec + pupil_shift, pupil_r, Color(0.10, 0.12, 0.18))
+
+# --- drawing helpers ---------------------------------------------------------
+
+func _draw_vgradient(rect: Rect2, top: Color, bot: Color) -> void:
+	# Cheap vertical gradient via a few horizontal bands.
+	var bands := 24
+	var bh := rect.size.y / bands
+	for b in range(bands):
+		var ct := top.lerp(bot, float(b) / float(bands - 1))
+		draw_rect(Rect2(rect.position.x, rect.position.y + b * bh, rect.size.x, bh + 1.0), ct)
+
+func _owned(x: int, y: int, owner: int) -> bool:
+	return in_bounds(x, y) and grid[idx(x, y)] == owner
+
+## Draw a darker border line along every edge where an owned cell meets a cell
+## of a different owner. Cheap, robust, and gives each region a crisp outline.
+func _draw_region_outlines() -> void:
+	for y in range(H):
+		for x in range(W):
+			var o := grid[idx(x, y)]
+			if o == 0:
+				continue
+			var edge: Color = players[o - 1].color.darkened(0.30)
+			edge.a = 0.9
+			var ox := x * CELL
+			var oy := y * CELL
+			if not _owned(x, y - 1, o):
+				draw_line(Vector2(ox, oy), Vector2(ox + CELL, oy), edge, 2.0)
+			if not _owned(x, y + 1, o):
+				draw_line(Vector2(ox, oy + CELL), Vector2(ox + CELL, oy + CELL), edge, 2.0)
+			if not _owned(x - 1, y, o):
+				draw_line(Vector2(ox, oy), Vector2(ox, oy + CELL), edge, 2.0)
+			if not _owned(x + 1, y, o):
+				draw_line(Vector2(ox + CELL, oy), Vector2(ox + CELL, oy + CELL), edge, 2.0)
+
+## A rounded-rect fill approximated by a plus-shape of two rects plus corner
+## discs — used for trail segments so the active line reads soft, not blocky.
+func _draw_rounded(rect: Rect2, col: Color, r: float) -> void:
+	r = minf(r, minf(rect.size.x, rect.size.y) * 0.5)
+	draw_rect(Rect2(rect.position.x + r, rect.position.y, rect.size.x - 2 * r, rect.size.y), col)
+	draw_rect(Rect2(rect.position.x, rect.position.y + r, rect.size.x, rect.size.y - 2 * r), col)
+	draw_circle(rect.position + Vector2(r, r), r, col)
+	draw_circle(rect.position + Vector2(rect.size.x - r, r), r, col)
+	draw_circle(rect.position + Vector2(r, rect.size.y - r), r, col)
+	draw_circle(rect.position + Vector2(rect.size.x - r, rect.size.y - r), r, col)
+
