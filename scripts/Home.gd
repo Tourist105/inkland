@@ -124,6 +124,18 @@ func _build() -> void:
 		col.add_child(Ui.label("%s  +%d" % [tr("T_DAILY"), daily], 22,
 			Color(0.72, 0.52, 0.05)))
 
+	# Test ad banner (menu only) — marks the real-AdMob slot for M4.
+	var banner := TestBanner.make()
+	banner.anchor_left = 0.5
+	banner.anchor_right = 0.5
+	banner.anchor_top = 1.0
+	banner.anchor_bottom = 1.0
+	banner.offset_left = -160
+	banner.offset_right = 160
+	banner.offset_top = -60
+	banner.offset_bottom = -8
+	add_child(banner)
+
 # ----------------------------------------------------------------- overlays --
 
 func _close_overlay() -> void:
