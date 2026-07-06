@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://wveaexhn7kg1"
+
+[deps]
+
+files=["res://assets/translations/strings.en.translation", "res://assets/translations/strings.de.translation", "res://assets/translations/strings.fr.translation", "res://assets/translations/strings.it.translation", "res://assets/translations/strings.es.translation", "res://assets/translations/strings.pt.translation", "res://assets/translations/strings.nl.translation", "res://assets/translations/strings.pl.translation", "res://assets/translations/strings.tr.translation", "res://assets/translations/strings.cs.translation", "res://assets/translations/strings.sk.translation", "res://assets/translations/strings.sv.translation", "res://assets/translations/strings.da.translation", "res://assets/translations/strings.nb.translation", "res://assets/translations/strings.fi.translation", "res://assets/translations/strings.hu.translation", "res://assets/translations/strings.ro.translation", "res://assets/translations/strings.ru.translation", "res://assets/translations/strings.uk.translation", "res://assets/translations/strings.el.translation", "res://assets/translations/strings.id.translation", "res://assets/translations/strings.vi.translation"]
+
+source_file="res://assets/translations/strings.csv"
+dest_files=["res://assets/translations/strings.en.translation", "res://assets/translations/strings.de.translation", "res://assets/translations/strings.fr.translation", "res://assets/translations/strings.it.translation", "res://assets/translations/strings.es.translation", "res://assets/translations/strings.pt.translation", "res://assets/translations/strings.nl.translation", "res://assets/translations/strings.pl.translation", "res://assets/translations/strings.tr.translation", "res://assets/translations/strings.cs.translation", "res://assets/translations/strings.sk.translation", "res://assets/translations/strings.sv.translation", "res://assets/translations/strings.da.translation", "res://assets/translations/strings.nb.translation", "res://assets/translations/strings.fi.translation", "res://assets/translations/strings.hu.translation", "res://assets/translations/strings.ro.translation", "res://assets/translations/strings.ru.translation", "res://assets/translations/strings.uk.translation", "res://assets/translations/strings.el.translation", "res://assets/translations/strings.id.translation", "res://assets/translations/strings.vi.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

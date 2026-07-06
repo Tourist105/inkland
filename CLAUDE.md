@@ -18,12 +18,27 @@ original code + original art. Do **NOT** import, trace, or pixel-copy paper.io
 risks all of it. Keep it clean.
 
 ## Status
-Scaffold stage. Core sim works: human + 2 bots, grid ownership, trail-laying,
-enclosure flood-fill capture, trail-cross death, respawn, live % HUD.
-Keyboard (arrows/WASD) + touch-swipe controls. See `GAME_DESIGN.md` for the
-full design and the M0–M4 roadmap.
+M1–M3 done (2026-07-06): full round flow (countdown → play → pause/death →
+continue-offer → results), 5 bots with greed/caution/aggro personalities,
+coins + 9-skin shop, settings (sound/haptics/language/privacy), help overlay,
+22-locale i18n, juice (capture flash, shake, haptics, synthesized SFX).
+M4 open: AdMob backend (see `scripts/Ads.gd` header), real ad ids, keystore
+alias, listing, Oppo device QA. See `GAME_DESIGN.md`.
 
 ## Layout
-- `scripts/Arena.gd`  — the whole simulation + renderer (grid, fill, bots, draw)
-- `scripts/Player.gd` — `InkPlayer` data class
-- `scenes/Main.tscn`  — Arena node + HUD label
+- `scripts/Arena.gd`   — simulation + renderer + round flow + in-round HUD
+- `scripts/Player.gd`  — `InkPlayer` data class incl. bot brain state
+- `scripts/Game.gd`    — autoload: save/coins/skins/settings/locale
+- `scripts/Sfx.gd`     — autoload: sound pool + haptics (WAVs from tools/gen_sfx.py)
+- `scripts/Ads.gd`     — autoload: ad seam (banner menus-only + 1 rewarded; NO interstitials)
+- `scripts/DevShot.gd` — autoload: env-var-gated screenshot tool (inert in prod)
+- `scripts/Home.gd` / `Shop.gd` — menu screens (UI built in code)
+- `scripts/SkinArt.gd`, `scripts/ui/*` — shared procedural art + UI kit
+- `assets/translations/strings.csv` — 22 languages (CJK/ar/th need font packs → M4)
+- `scenes/Home.tscn` (main), `Main.tscn` (arena), `Shop.tscn`
+
+## Validation
+Headless: `Godot_console --headless --path . --import` then
+`--headless --fixed-fps 60 --path . scenes/Main.tscn --quit-after 5400`
+(fixed-fps, sonst sind Frames ≠ Sekunden). Screenshots:
+`INKLAND_SHOT=out.png INKLAND_SHOT_FRAME=240 Godot --path . [scene]`.

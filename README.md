@@ -13,8 +13,12 @@ an enemy's — and that line's owner is out. Most territory wins.
 3. Steer with **arrow keys / WASD** (desktop) or **swipe** (touch).
 
 ## Status
-Playable core-mechanic scaffold (you + 2 bots). Design, differentiators and
-roadmap in [GAME_DESIGN.md](GAME_DESIGN.md).
+Feature-complete game loop: home screen, 3-2-1 countdown, you + 5 bot
+personalities, capture juice (flash/shake/haptics/sound), continue-after-death
+and 2× coins (rewarded-ad seam, test ids), coins, 9-skin shop, settings
+(sound/vibration/language/privacy), help, 22 UI languages. Remaining for
+release: AdMob backend plugin + real ids, store listing, device QA — see
+GAME_DESIGN.md §7 (M4).
 
 > Mechanic clone only — 100% original code and art. No paper.io assets, name,
 > or trade dress. See `CLAUDE.md`.

@@ -87,26 +87,43 @@ ASO title pattern (per portfolio rule): `Inkland — Territory Arena`.
 - **Bots:** per-tick intent in `_bot_think` (wander out, curl home to close).
   Personalities + threat awareness are M2.
 
-## 6. What's in the scaffold right now (M0 — done)
+## 6. What's built (M0–M3 — done 2026-07-06)
 
 - ✅ Grid sim, ownership, trail-laying, **enclosure flood-fill capture**
-- ✅ Trail-cross death + neutralise + timed respawn
-- ✅ Human + 2 bots, distinct colours, live **% HUD**
-- ✅ Keyboard (arrows/WASD) + touch-swipe steering
-- ✅ Android export preset, package, portrait, < a few MB
-- ▶ Open `project.godot`, press **F5** to play.
+- ✅ Trail-cross death, neutralise, timed respawn (bots at fresh free spots)
+- ✅ Camera follow + zoom, interpolated movement, ribbon trails
+- ✅ Human + **5 bots** with greed/caution/aggro personalities, loop planning,
+  threat awareness, opportunistic trail-cutting
+- ✅ Round flow: 3-2-1 countdown → play → pause → death (cause shown) →
+  continue-offer (rewarded seam) → results → retry/menu; win at 100%
+- ✅ Juice: capture flash + floating "+x%", kill/death rings, screen shake,
+  haptics, 7 synthesized original SFX (tools/gen_sfx.py)
+- ✅ Meta: coins (territory + eliminations), **9-skin shop** (procedural faces),
+  best-score record, save via ConfigFile
+- ✅ Home / settings (sound, vibration, language, privacy) / help overlay
+- ✅ **22 UI languages** (strings.csv), in-app switcher, system-locale default
+- ✅ Ad seam (`scripts/Ads.gd`): banner menus-only + ONE rewarded (2× coins /
+  continue). Google TEST ids. Editor simulates rewarded so UX is testable.
+- ✅ Headless-validated (import + 90 s fixed-fps sim) + rendered screenshots
+  via the DevShot autoload
 
-## 7. Roadmap
+## 7. Roadmap — what's left to ship (M4)
 
-- **M1 — feel:** camera follow + zoom, smooth head interpolation, capture/kill
-  juice + haptics, sound. Original skin/face art (first 3 skins).
-- **M2 — depth:** analog steering, bot personalities + threat AI, 6–8 bots,
-  round flow (start → death → results → retry), coins.
-- **M3 — meta:** skin shop, daily seed challenge, modifiers, settings (AMOLED,
-  haptics, locale), in-app review hook (reuse portfolio helper).
-- **M4 — ship:** AdMob banner + one rewarded (real `ch.roethlisberger.inkland`
-  AdMob IDs — needs an AdMob app created), `inkland` keystore alias, localise
-  listing, screenshots. **Upload only when it clearly beats Paper.io 2.**
+1. **AdMob backend:** install a Godot-4.6-compatible AdMob Android editor
+   plugin, implement `res://scripts/AdsBackend.gd` (contract in Ads.gd header),
+   gradle build ON in the export preset. Keep TEST ids until prod moment.
+2. **AdMob console:** Nils creates the Inkland app entry → real app/banner/
+   rewarded ids into Ads.gd right before the production upload.
+3. **UMP consent** (portfolio standard) via the same plugin.
+4. **Fonts for CJK/ar/th/hi locales** (Noto subsets) + extend strings.csv,
+   or ship v1 with the 22 current locales.
+5. **Keystore:** add `inkland` alias (KEYSTORE_GUIDE.md), signed AAB.
+6. **Store listing:** 88-locale ASO texts + localized screenshots
+   (DevShot produces the frames), icon exports.
+7. **Device QA on the Oppo** per the portfolio Definition-of-Done (swipe feel,
+   haptics, back button, language switch, banner layout with cutouts).
+8. Optional post-v1: daily seed challenge, modifiers, in-app review hook.
+   **Upload only when it clearly beats Paper.io 2.**
 
 ## 8. Open decisions for Nils
 
