@@ -85,8 +85,12 @@ var _lb_dots: Array[Panel] = []
 var _lb_labels: Array[Label] = []
 var _minimap: MiniMap
 var _info_acc := 0.0
-var _terr_img: Image
-var _terr_tex: ImageTexture
+var _mask_a: Image          # R=land G=p1 B=p2 A=p3
+var _mask_b: Image          # R=p4 G=p5 B=p6
+var _tex_a: ImageTexture
+var _tex_b: ImageTexture
+var _spr_a: Sprite2D
+var _spr_b: Sprite2D
 var _land := PackedByteArray()     # 1 = playable land (country silhouette)
 var _land_total := 1
 
@@ -132,11 +136,14 @@ func _ready() -> void:
 	trail_owner = PackedByteArray()
 	trail_owner.resize(W * H)
 	_counts.resize(BOT_COUNT + 2)
-	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR   # smooth territory edges
-	_terr_img = Image.create(W, H, false, Image.FORMAT_RGBA8)
-	_terr_tex = ImageTexture.create_from_image(_terr_img)
+	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	_mask_a = Image.create(W, H, false, Image.FORMAT_RGBA8)
+	_mask_b = Image.create(W, H, false, Image.FORMAT_RGBA8)
+	_tex_a = ImageTexture.create_from_image(_mask_a)
+	_tex_b = ImageTexture.create_from_image(_mask_b)
 	_build_land_mask()
 	_spawn_players()
+	_build_territory_layers()
 	_refresh_territory()
 	if cam != null:
 		cam.zoom = Vector2(CAM_ZOOM, CAM_ZOOM)
@@ -1185,17 +1192,91 @@ func _build_results_panel() -> PanelContainer:
 ## Rebuild the smooth territory texture from the grid (linear-filtered when
 ## drawn, so region edges read as smooth curves, not stepped tiles).
 func _refresh_territory() -> void:
-	var bt := Game.country_tint()
-	var paper := Color(BG_TOP.r * bt.r, BG_TOP.g * bt.g, BG_TOP.b * bt.b)
 	for y in H:
 		for x in W:
 			var i3 := idx(x, y)
-			if _land[i3] == 0:
-				_terr_img.set_pixel(x, y, WATER)
-			else:
-				var o := grid[i3]
-				_terr_img.set_pixel(x, y, paper if o == 0 else players[o - 1].color)
-	_terr_tex.update(_terr_img)
+			var o := int(grid[i3])
+			var la := 1.0 if _land[i3] == 1 else 0.0
+			_mask_a.set_pixel(x, y, Color(la,
+				1.0 if o == 1 else 0.0, 1.0 if o == 2 else 0.0, 1.0 if o == 3 else 0.0))
+			_mask_b.set_pixel(x, y, Color(1.0 if o == 4 else 0.0,
+				1.0 if o == 5 else 0.0, 1.0 if o == 6 else 0.0, 0.0))
+	_tex_a.update(_mask_a)
+	_tex_b.update(_mask_b)
+
+## Smoothstep-sharpened bilinear masks = mathematically smooth region edges
+## (the real paper.io look — no stairs, no blur).
+const TERR_SHADER_A := """
+shader_type canvas_item;
+uniform vec4 water : source_color;
+uniform vec4 paper : source_color;
+uniform vec4 p1 : source_color;
+uniform vec4 p2 : source_color;
+uniform vec4 p3 : source_color;
+const float AA = 0.16;
+void fragment() {
+	vec4 m = texture(TEXTURE, UV);
+	vec3 c = water.rgb;
+	c = mix(c, paper.rgb, smoothstep(0.5 - AA, 0.5 + AA, m.r));
+	c = mix(c, p1.rgb, smoothstep(0.5 - AA, 0.5 + AA, m.g));
+	c = mix(c, p2.rgb, smoothstep(0.5 - AA, 0.5 + AA, m.b));
+	c = mix(c, p3.rgb, smoothstep(0.5 - AA, 0.5 + AA, m.a));
+	COLOR = vec4(c, 1.0);
+}
+"""
+const TERR_SHADER_B := """
+shader_type canvas_item;
+uniform vec4 p4 : source_color;
+uniform vec4 p5 : source_color;
+uniform vec4 p6 : source_color;
+const float AA = 0.16;
+void fragment() {
+	vec4 m = texture(TEXTURE, UV);
+	vec4 o = vec4(0.0);
+	float a;
+	a = smoothstep(0.5 - AA, 0.5 + AA, m.r); o = mix(o, vec4(p4.rgb, 1.0), a);
+	a = smoothstep(0.5 - AA, 0.5 + AA, m.g); o = mix(o, vec4(p5.rgb, 1.0), a);
+	a = smoothstep(0.5 - AA, 0.5 + AA, m.b); o = mix(o, vec4(p6.rgb, 1.0), a);
+	COLOR = o;
+}
+"""
+
+func _make_terr_sprite(tex: ImageTexture, code: String) -> Sprite2D:
+	var sp := Sprite2D.new()
+	sp.texture = tex
+	sp.centered = false
+	sp.position = Vector2(-CELL * 0.5, -CELL * 0.5)
+	sp.scale = Vector2(CELL, CELL)
+	sp.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	sp.z_index = -1
+	var sh := Shader.new()
+	sh.code = code
+	var mat := ShaderMaterial.new()
+	mat.shader = sh
+	sp.material = mat
+	add_child(sp)
+	return sp
+
+func _build_territory_layers() -> void:
+	# Water backdrop behind everything.
+	var bg := ColorRect.new()
+	bg.color = WATER
+	bg.position = Vector2(-CELL * 20, -CELL * 20)
+	bg.size = Vector2((W + 40) * CELL, (H + 40) * CELL)
+	bg.z_index = -2
+	add_child(bg)
+	_spr_a = _make_terr_sprite(_tex_a, TERR_SHADER_A)
+	_spr_b = _make_terr_sprite(_tex_b, TERR_SHADER_B)
+	var bt := Game.country_tint()
+	var paper := Color(BG_TOP.r * bt.r, BG_TOP.g * bt.g, BG_TOP.b * bt.b)
+	var ma: ShaderMaterial = _spr_a.material
+	ma.set_shader_parameter("water", WATER)
+	ma.set_shader_parameter("paper", paper)
+	for k in 3:
+		ma.set_shader_parameter("p%d" % (k + 1), players[k].color)
+	var mb: ShaderMaterial = _spr_b.material
+	for k in 3:
+		mb.set_shader_parameter("p%d" % (k + 4), players[k + 3].color)
 
 ## Rasterize the current country's silhouette into the land mask — the arena
 ## IS the country (paper.io-2 style). Unknown countries get a seeded island.
@@ -1242,11 +1323,7 @@ func _draw() -> void:
 	draw_rect(Rect2(-CELL * 8, -CELL * 8, board.size.x + CELL * 16, board.size.y + CELL * 16), VOID)
 	_draw_vgradient(board, BG_TOP, BG_BOT)
 
-	# Territory — one smooth linear-filtered texture (paper.io-style edges,
-	# no visible tiles/steps). Half-texel inset keeps it aligned to cells.
-	if _terr_tex != null:
-		draw_texture_rect(_terr_tex,
-			Rect2(-CELL * 0.5, -CELL * 0.5, (W + 1) * CELL, (H + 1) * CELL), false)
+
 
 
 	# Capture flash: freshly claimed cells blink white and fade.
