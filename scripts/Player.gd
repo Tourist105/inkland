@@ -24,9 +24,12 @@ var trail: Array[Vector2i] = []
 var respawn_in: float = 0.0
 var kills: int = 0
 
-## Visual interpolation: previous cell the head occupied last tick.
-## The renderer lerps from (prev_cx, prev_cy) to (cx, cy) across one TICK so
-## movement reads as fluid even though the sim is locked to the grid.
+## Smooth steering (paper.io-2 style): heads move continuously with a turn
+## radius; the grid only sees discrete cell-entry events.
+var pos: Vector2 = Vector2.ZERO   # float world position (px)
+var heading: float = 0.0          # radians
+
+## Legacy fields kept for compatibility (cell interpolation era).
 var prev_cx: int = 0
 var prev_cy: int = 0
 

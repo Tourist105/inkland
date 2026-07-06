@@ -18,7 +18,10 @@ const InkPlayer = preload("res://scripts/Player.gd")
 const W := 56
 const H := 96
 const CELL := 20.0
-const TICK := 0.10          # seconds the head spends crossing one cell
+const TICK := 0.10          # bot-brain cadence (movement itself is continuous)
+const SPEED := 200.0        # px/s — one cell per TICK, like the grid era
+const TURN_RATE := 4.8      # rad/s, human (paper.io-2-style arc turns)
+const BOT_TURN := 4.0
 const RESPAWN := 2.0
 const START_RADIUS := 2
 const BOT_COUNT := 5
@@ -53,6 +56,8 @@ var state: int = State.COUNTDOWN
 
 var _accum := 0.0
 var _swipe_start := Vector2.ZERO
+var _human_target := 0.0          # drag steering angle (radians)
+var _human_has_target := false
 var _count_t := 3.0
 var _go_flash := 0.0
 var _shake := 0.0
@@ -172,10 +177,12 @@ func _respawn(p: InkPlayer) -> void:
 	p.alive = true
 	p.cx = p.home.x
 	p.cy = p.home.y
-	p.prev_cx = p.cx
-	p.prev_cy = p.cy
+	p.pos = _cell_center(p.cx, p.cy)
 	p.dir = Vector2i.UP if p.cy > H / 2 else Vector2i.DOWN
+	p.heading = Vector2(p.dir).angle()
 	p.pending_dir = Vector2i.ZERO
+	if p.is_human:
+		_human_has_target = false
 	p.is_out = false
 	p.going_home = false
 	p.plan.clear()
@@ -232,20 +239,19 @@ func _process(delta: float) -> void:
 			_accum += delta
 			while _accum >= TICK and state == State.PLAYING:
 				_accum -= TICK
-				_tick()
+				_think_tick()
+			if state == State.PLAYING:
+				_move_actors(minf(delta, 1.0 / 30.0))
+				_update_info()
 			_age_fx(delta)
 			_update_camera(delta)
 			queue_redraw()
 		_:
 			pass   # PAUSED / OVER: everything freezes
 
-func _tick_alpha() -> float:
-	return clampf(_accum / TICK, 0.0, 1.0)
-
-func _tick() -> void:
+## Bot brains + respawn timers run on the old grid cadence.
+func _think_tick() -> void:
 	for p in players:
-		if state != State.PLAYING:
-			return              # the human died mid-loop — freeze instantly
 		if not p.alive:
 			p.respawn_in -= TICK
 			if p.respawn_in <= 0.0:
@@ -253,26 +259,53 @@ func _tick() -> void:
 			continue
 		if not p.is_human:
 			_bot_think(p)
-		_step(p)
-	_update_info()
 
-func _step(p: InkPlayer) -> void:
-	if p.pending_dir != Vector2i.ZERO and p.pending_dir != -p.dir:
-		p.dir = p.pending_dir
-	p.pending_dir = Vector2i.ZERO
+## Continuous paper.io-2-style movement: heads fly at SPEED with a turn
+## radius; the grid only reacts to discrete cell-entry events.
+func _move_actors(dt: float) -> void:
+	for p in players:
+		if state != State.PLAYING:
+			return
+		if not p.alive:
+			continue
+		# Steering target: human drag angle or the (bot/keyboard) grid intent.
+		var target := p.heading
+		if p.is_human and _human_has_target:
+			target = _human_target
+		elif p.pending_dir != Vector2i.ZERO:
+			target = Vector2(p.pending_dir).angle()
+		var diff := angle_difference(p.heading, target)
+		var rate := (TURN_RATE if p.is_human else BOT_TURN) * dt
+		p.heading += clampf(diff, -rate, rate)
+		p.pos += Vector2.from_angle(p.heading) * SPEED * dt
+		p.dir = _cardinal(p.heading)          # bots' brain works in cardinals
 
-	# Record where we were, for visual interpolation this tick.
-	p.prev_cx = p.cx
-	p.prev_cy = p.cy
+		# Board edge: sliding is fine inside your land, fatal mid-trail.
+		var m := CELL * 0.5
+		var clamped := Vector2(clampf(p.pos.x, m, W * CELL - m),
+			clampf(p.pos.y, m, H * CELL - m))
+		if clamped != p.pos:
+			p.pos = clamped
+			if p.is_out:
+				_kill(p, null, "wall")
+				continue
+		# Cell-entry events (one axis at a time — no corner skipping).
+		var nx := int(p.pos.x / CELL)
+		var ny := int(p.pos.y / CELL)
+		while (p.cx != nx or p.cy != ny) and p.alive and state == State.PLAYING:
+			if p.cx != nx:
+				_enter_cell(p, p.cx + signi(nx - p.cx), p.cy)
+			else:
+				_enter_cell(p, p.cx, p.cy + signi(ny - p.cy))
 
-	var nx := p.cx + p.dir.x
-	var ny := p.cy + p.dir.y
-	if not in_bounds(nx, ny):
-		if p.is_out:
-			_kill(p, null, "wall")      # ran into the wall mid-trail
-		return                          # otherwise idle against the edge
+static func _cardinal(heading: float) -> Vector2i:
+	var v := Vector2.from_angle(heading)
+	if absf(v.x) >= absf(v.y):
+		return Vector2i(signi(int(signf(v.x))), 0) if v.x != 0.0 else Vector2i.RIGHT
+	return Vector2i(0, signi(int(signf(v.y))))
+
+func _enter_cell(p: InkPlayer, nx: int, ny: int) -> void:
 	var ni := idx(nx, ny)
-
 	# Crossing a live trail kills its owner.
 	var to := trail_owner[ni]
 	if to != 0:
@@ -287,12 +320,10 @@ func _step(p: InkPlayer) -> void:
 		else:
 			_kill(victim, null, "self")
 			return                      # we crossed our own line — done
-
-	if state != State.PLAYING:
-		return                          # the human just died
+	if state != State.PLAYING or not p.alive:
+		return
 	p.cx = nx
 	p.cy = ny
-
 	if grid[ni] == p.id:
 		if p.is_out:
 			_commit(p)                  # closed the loop back home
@@ -529,14 +560,18 @@ func _nearest_owned(p: InkPlayer) -> Vector2i:
 func _read_human_input() -> void:
 	if human == null or not human.alive:
 		return
+	var kb := Vector2i.ZERO
 	if Input.is_action_pressed("ui_up") or Input.is_physical_key_pressed(KEY_W):
-		human.pending_dir = Vector2i.UP
-	elif Input.is_action_pressed("ui_down") or Input.is_physical_key_pressed(KEY_S):
-		human.pending_dir = Vector2i.DOWN
-	elif Input.is_action_pressed("ui_left") or Input.is_physical_key_pressed(KEY_A):
-		human.pending_dir = Vector2i.LEFT
-	elif Input.is_action_pressed("ui_right") or Input.is_physical_key_pressed(KEY_D):
-		human.pending_dir = Vector2i.RIGHT
+		kb.y -= 1
+	if Input.is_action_pressed("ui_down") or Input.is_physical_key_pressed(KEY_S):
+		kb.y += 1
+	if Input.is_action_pressed("ui_left") or Input.is_physical_key_pressed(KEY_A):
+		kb.x -= 1
+	if Input.is_action_pressed("ui_right") or Input.is_physical_key_pressed(KEY_D):
+		kb.x += 1
+	if kb != Vector2i.ZERO:
+		human.pending_dir = kb
+		_human_has_target = false
 
 func _input(event: InputEvent) -> void:
 	if state != State.PLAYING and state != State.COUNTDOWN:
@@ -545,13 +580,12 @@ func _input(event: InputEvent) -> void:
 		if event.pressed:
 			_swipe_start = event.position
 	elif event is InputEventScreenDrag and human != null and human.alive:
+		# Analog steering, paper.io-2 style: the drag vector from the touch
+		# origin sets the heading directly — arcs, not 4 directions.
 		var d: Vector2 = event.position - _swipe_start
-		if d.length() > 24.0:
-			if absf(d.x) > absf(d.y):
-				human.pending_dir = Vector2i.RIGHT if d.x > 0.0 else Vector2i.LEFT
-			else:
-				human.pending_dir = Vector2i.DOWN if d.y > 0.0 else Vector2i.UP
-			_swipe_start = event.position
+		if d.length() > 14.0:
+			_human_target = d.angle()
+			_human_has_target = true
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
@@ -607,8 +641,9 @@ func _revive() -> void:
 		human.home = spot
 	human.cx = spot.x
 	human.cy = spot.y
-	human.prev_cx = spot.x
-	human.prev_cy = spot.y
+	human.pos = _cell_center(spot.x, spot.y)
+	human.heading = -PI * 0.5
+	_human_has_target = false
 	human.is_out = false
 	human.trail.clear()
 	human.pending_dir = Vector2i.ZERO
@@ -702,10 +737,9 @@ func _update_camera(delta: float) -> void:
 	else:
 		cam.offset = Vector2.ZERO
 
+## Head position on screen — continuous since the smooth-steering rewrite.
 func _head_visual(p: InkPlayer) -> Vector2:
-	var from := _cell_center(p.prev_cx, p.prev_cy)
-	var to := _cell_center(p.cx, p.cy)
-	return from.lerp(to, _tick_alpha())
+	return p.pos
 
 func _on_screen(world_pos: Vector2) -> bool:
 	return cam != null and world_pos.distance_to(cam.position) < 420.0
@@ -1039,7 +1073,7 @@ func _draw() -> void:
 		if p.alive:
 			var c := _head_visual(p)
 			SkinArt.draw_blob(self, c, CELL * 0.62, p.color, p.face,
-				Vector2(p.dir.x, p.dir.y))
+				Vector2.from_angle(p.heading))
 	var font := ThemeDB.fallback_font
 	for p in players:
 		if p.alive:
