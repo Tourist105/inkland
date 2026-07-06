@@ -135,6 +135,9 @@ func _spawn_players() -> void:
 		Vector2i(10, 12), Vector2i(W - 11, 14), Vector2i(9, H / 2),
 		Vector2i(W - 10, H / 2 + 6), Vector2i(W / 2, 16),
 	]
+	# Difficulty scales with the player's proven skill (best %): rookies get
+	# timid bots, record-chasers get hunters. Keeps rounds tense but fair.
+	var skill := clampf(Game.best_pct / 60.0, 0.0, 1.0)
 	for i in BOT_COUNT:
 		var b := InkPlayer.new()
 		b.id = i + 2
@@ -142,9 +145,9 @@ func _spawn_players() -> void:
 		b.face = randi() % 6
 		b.display_name = names[i]
 		b.home = homes[i]
-		b.greed = randf_range(0.2, 1.0)
-		b.caution = randf_range(0.2, 1.0)
-		b.aggro = randf_range(0.1, 1.0)
+		b.greed = randf_range(0.2 + 0.3 * skill, 1.0)
+		b.caution = randf_range(0.2, 1.0 - 0.35 * skill)
+		b.aggro = randf_range(0.1 + 0.45 * skill, 1.0)
 		players.append(b)
 	for p in players:
 		_respawn(p)
