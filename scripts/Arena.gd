@@ -59,6 +59,7 @@ var _shake := 0.0
 var _max_pct := 0.0
 var _revive_used := false
 var _doubled := false
+var _best_flashed := false
 var _earned := 0
 var _final_pct := 0.0
 var _counts: Array[int] = []
@@ -757,6 +758,14 @@ func _update_info() -> void:
 		_lb_labels[r].text = "%s %.1f%%" % [p.display_name, cnt * 100.0 / total]
 		var sb: StyleBoxFlat = _lb_dots[r].get_theme_stylebox("panel")
 		sb.bg_color = p.color
+	# Live "new best" moment the instant the old record falls mid-run.
+	if not _best_flashed and state == State.PLAYING \
+			and Game.best_pct > 1.0 and you > Game.best_pct:
+		_best_flashed = true
+		_add_text_fx(_head_visual(human) - Vector2(0, CELL * 2.4),
+			tr("T_NEW_BEST"), Ui.GOLD.darkened(0.1))
+		Sfx.play("coin")
+		Sfx.haptic(40)
 	if state == State.PLAYING and you >= 99.95:
 		_round_won()
 

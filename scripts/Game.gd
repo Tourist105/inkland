@@ -45,6 +45,7 @@ var unlocked: Array = [0]
 var sound_on := true
 var haptics_on := true
 var locale := ""            # "" = follow system
+var last_bonus_day := ""
 var seen_help := false
 
 func _ready() -> void:
@@ -52,6 +53,16 @@ func _ready() -> void:
 	apply_locale()
 
 # ------------------------------------------------------------------ economy --
+
+## +50 coins on the first launch of each day (D1 retention hook).
+func claim_daily() -> int:
+	var today := Time.get_date_string_from_system()
+	if today == last_bonus_day:
+		return 0
+	last_bonus_day = today
+	add_coins(50)
+	return 50
+
 
 func add_coins(n: int) -> void:
 	coins += n
@@ -120,6 +131,7 @@ func save_state() -> void:
 	cf.set_value("s", "sound_on", sound_on)
 	cf.set_value("s", "haptics_on", haptics_on)
 	cf.set_value("s", "locale", locale)
+	cf.set_value("s", "last_bonus_day", last_bonus_day)
 	cf.set_value("s", "seen_help", seen_help)
 	cf.save(SAVE_PATH)
 
@@ -135,6 +147,7 @@ func load_state() -> void:
 	sound_on = cf.get_value("s", "sound_on", true)
 	haptics_on = cf.get_value("s", "haptics_on", true)
 	locale = cf.get_value("s", "locale", "")
+	last_bonus_day = cf.get_value("s", "last_bonus_day", "")
 	seen_help = cf.get_value("s", "seen_help", false)
 	if not unlocked.has(0):
 		unlocked.append(0)

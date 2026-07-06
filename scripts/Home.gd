@@ -116,6 +116,11 @@ func _build() -> void:
 	_coins_label = Ui.label(str(Game.coins), 26, Ui.INK)
 	chip_row.add_child(_coins_label)
 
+	var daily := Game.claim_daily()
+	if daily > 0:
+		col.add_child(Ui.label("%s  +%d" % [tr("T_DAILY"), daily], 22,
+			Color(0.72, 0.52, 0.05)))
+
 # ----------------------------------------------------------------- overlays --
 
 func _close_overlay() -> void:
