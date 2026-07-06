@@ -598,6 +598,16 @@ func _nearest_owned(p: InkPlayer) -> Vector2i:
 func _read_human_input() -> void:
 	if human == null or not human.alive:
 		return
+	# DEMO mode (store screenshots): drive the human with the bot brain so the
+	# arena fills with real captured territory. Inert in normal play.
+	if OS.get_environment("DEMO") != "":
+		human.greed = 0.9
+		human.aggro = 0.3
+		_bot_think(human)
+		if human.pending_dir != Vector2i.ZERO:
+			_human_target = Vector2(human.pending_dir).angle()
+			_human_has_target = true
+		return
 	var kb := Vector2i.ZERO
 	if Input.is_action_pressed("ui_up") or Input.is_physical_key_pressed(KEY_W):
 		kb.y -= 1
@@ -636,6 +646,9 @@ func _notification(what: int) -> void:
 # --------------------------------------------------------------- round flow --
 
 func _human_died(cause: String, killer: InkPlayer) -> void:
+	if OS.get_environment("DEMO") != "":
+		human.is_out = false      # DEMO/store: invincible, keep painting
+		return
 	human.alive = false
 	state = State.OVER
 	Sfx.play("death")

@@ -140,6 +140,9 @@ func _build() -> void:
 			Color(0.72, 0.52, 0.05)))
 
 	# Test ad banner (menu only) — marks the real-AdMob slot for M4.
+	# STORE_MODE hides it so store screenshots stay clean.
+	if OS.get_environment("STORE_MODE") != "":
+		return
 	var banner := TestBanner.make()
 	banner.anchor_left = 0.5
 	banner.anchor_right = 0.5
