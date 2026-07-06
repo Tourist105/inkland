@@ -93,6 +93,21 @@ func _build() -> void:
 		get_tree().change_scene_to_file("res://scenes/Main.tscn"))
 	col.add_child(play)
 
+	if Ads.rewarded_ready():
+		var boost := Button.new()
+		boost.text = tr("T_START_BIG") + "  (AD)"
+		Ui.style_button(boost, Color(0.16, 0.72, 0.42), 24)
+		boost.custom_minimum_size = Vector2(360, 68)
+		boost.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		boost.pressed.connect(func() -> void:
+			Sfx.play("click")
+			Ads.show_rewarded(func() -> void:
+				Game.start_boost = true
+				Game.save_state()
+				Ads.hide_banner()
+				get_tree().change_scene_to_file("res://scenes/Main.tscn")))
+		col.add_child(boost)
+
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 18)

@@ -47,6 +47,7 @@ var haptics_on := true
 var locale := ""            # "" = follow system
 var last_bonus_day := ""
 var seen_help := false
+var start_boost := false   # next round starts with a big claim (rewarded)
 var country_idx := 0
 var country_fill := 0.0
 

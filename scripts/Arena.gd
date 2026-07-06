@@ -189,8 +189,13 @@ func _respawn(p: InkPlayer) -> void:
 	p.going_home = false
 	p.plan.clear()
 	p.trail.clear()
-	for y in range(p.home.y - START_RADIUS, p.home.y + START_RADIUS + 1):
-		for x in range(p.home.x - START_RADIUS, p.home.x + START_RADIUS + 1):
+	var rad := START_RADIUS
+	if p.is_human and Game.start_boost:
+		rad = 5                        # rewarded "start big" (~5x area)
+		Game.start_boost = false
+		Game.save_state()
+	for y in range(p.home.y - rad, p.home.y + rad + 1):
+		for x in range(p.home.x - rad, p.home.x + rad + 1):
 			if in_bounds(x, y):
 				grid[idx(x, y)] = p.id
 
