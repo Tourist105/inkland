@@ -85,6 +85,39 @@ var _lb_dots: Array[Panel] = []
 var _lb_labels: Array[Label] = []
 var _minimap: MiniMap
 var _info_acc := 0.0
+var _terr_img: Image
+var _terr_tex: ImageTexture
+var _land := PackedByteArray()     # 1 = playable land (country silhouette)
+var _land_total := 1
+
+const WATER := Color(0.47, 0.58, 0.72)
+
+## Rough, recognisable country silhouettes (normalized 0..1, y down = south).
+## Countries without a shape get a seeded island blob.
+const COUNTRY_SHAPES := {
+	"Switzerland": [Vector2(0.08, 0.45), Vector2(0.25, 0.30), Vector2(0.50, 0.24),
+		Vector2(0.72, 0.30), Vector2(0.92, 0.42), Vector2(0.88, 0.62),
+		Vector2(0.68, 0.72), Vector2(0.45, 0.76), Vector2(0.22, 0.68), Vector2(0.10, 0.58)],
+	"Austria": [Vector2(0.05, 0.52), Vector2(0.22, 0.42), Vector2(0.42, 0.40),
+		Vector2(0.62, 0.36), Vector2(0.92, 0.34), Vector2(0.95, 0.50),
+		Vector2(0.74, 0.58), Vector2(0.50, 0.60), Vector2(0.28, 0.66), Vector2(0.10, 0.64)],
+	"Netherlands": [Vector2(0.30, 0.14), Vector2(0.62, 0.10), Vector2(0.76, 0.26),
+		Vector2(0.70, 0.50), Vector2(0.80, 0.74), Vector2(0.55, 0.86),
+		Vector2(0.34, 0.80), Vector2(0.24, 0.60), Vector2(0.36, 0.40), Vector2(0.20, 0.28)],
+	"Portugal": [Vector2(0.35, 0.08), Vector2(0.62, 0.10), Vector2(0.66, 0.30),
+		Vector2(0.60, 0.50), Vector2(0.68, 0.70), Vector2(0.60, 0.90),
+		Vector2(0.34, 0.92), Vector2(0.30, 0.70), Vector2(0.38, 0.50), Vector2(0.30, 0.28)],
+	"Greece": [Vector2(0.20, 0.10), Vector2(0.55, 0.08), Vector2(0.75, 0.20),
+		Vector2(0.90, 0.18), Vector2(0.85, 0.35), Vector2(0.62, 0.40),
+		Vector2(0.72, 0.55), Vector2(0.55, 0.60), Vector2(0.64, 0.76),
+		Vector2(0.42, 0.90), Vector2(0.30, 0.72), Vector2(0.45, 0.55),
+		Vector2(0.30, 0.45), Vector2(0.14, 0.30)],
+	"Italy": [Vector2(0.25, 0.06), Vector2(0.55, 0.05), Vector2(0.70, 0.12),
+		Vector2(0.62, 0.25), Vector2(0.50, 0.40), Vector2(0.55, 0.55),
+		Vector2(0.76, 0.70), Vector2(0.92, 0.78), Vector2(0.86, 0.90),
+		Vector2(0.64, 0.88), Vector2(0.48, 0.74), Vector2(0.40, 0.55),
+		Vector2(0.34, 0.35), Vector2(0.20, 0.20)],
+}
 var _count_label: Label
 var _hint_label: Label
 var _dim: ColorRect
@@ -99,7 +132,12 @@ func _ready() -> void:
 	trail_owner = PackedByteArray()
 	trail_owner.resize(W * H)
 	_counts.resize(BOT_COUNT + 2)
+	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR   # smooth territory edges
+	_terr_img = Image.create(W, H, false, Image.FORMAT_RGBA8)
+	_terr_tex = ImageTexture.create_from_image(_terr_img)
+	_build_land_mask()
 	_spawn_players()
+	_refresh_territory()
 	if cam != null:
 		cam.zoom = Vector2(CAM_ZOOM, CAM_ZOOM)
 		cam.position = _cell_center(human.cx, human.cy)
@@ -134,17 +172,14 @@ func _spawn_players() -> void:
 	me.face = skin.face
 	me.is_human = true
 	me.display_name = tr("T_YOU")
-	me.home = Vector2i(W / 2, H - 28)
+	me.home = _any_land_spot()
 	players.append(me)
 	human = me
 
 	var colors := _bot_palette(skin.color)
 	var names := BOT_NAMES.duplicate()
 	names.shuffle()
-	var homes := [
-		Vector2i(20, 24), Vector2i(W - 22, 28), Vector2i(18, H / 2),
-		Vector2i(W - 20, H / 2 + 12), Vector2i(W / 2, 32),
-	]
+
 	# Difficulty scales with the player's proven skill (best %): rookies get
 	# timid bots, record-chasers get hunters. Keeps rounds tense but fair.
 	var skill := clampf(Game.best_pct / 60.0, 0.0, 1.0)
@@ -154,7 +189,7 @@ func _spawn_players() -> void:
 		b.color = colors[i]
 		b.face = randi() % 6
 		b.display_name = names[i]
-		b.home = homes[i]
+		b.home = _any_land_spot()
 		b.greed = randf_range(0.2 + 0.3 * skill, 1.0)
 		b.caution = randf_range(0.2, 1.0 - 0.35 * skill)
 		b.aggro = randf_range(0.1 + 0.45 * skill, 1.0)
@@ -201,7 +236,16 @@ func _respawn(p: InkPlayer) -> void:
 			if in_bounds(x, y):
 				grid[idx(x, y)] = p.id
 
-## A random mostly-neutral 5x5 patch, or (-1,-1) if none found.
+func _any_land_spot() -> Vector2i:
+	var spot := _find_free_spot()
+	if spot != Vector2i(-1, -1):
+		return spot
+	for i in W * H:
+		if _land[i] == 1:
+			return Vector2i(i % W, i / W)
+	return Vector2i(W / 2, H / 2)
+
+## A random mostly-neutral 5x5 LAND patch, or (-1,-1) if none found.
 func _find_free_spot() -> Vector2i:
 	for _try in 40:
 		var x := randi_range(START_RADIUS + 2, W - START_RADIUS - 3)
@@ -210,7 +254,7 @@ func _find_free_spot() -> Vector2i:
 		for dy in range(-START_RADIUS, START_RADIUS + 1):
 			for dx in range(-START_RADIUS, START_RADIUS + 1):
 				var i := idx(x + dx, y + dy)
-				if grid[i] != 0 or trail_owner[i] != 0:
+				if grid[i] != 0 or trail_owner[i] != 0 or _land[i] == 0:
 					ok = false
 					break
 			if not ok:
@@ -252,10 +296,11 @@ func _process(delta: float) -> void:
 			if state == State.PLAYING:
 				_move_actors(minf(delta, 1.0 / 30.0))
 				_info_acc += delta
-				if _info_acc >= 0.1:      # counts + minimap at 10 Hz
+				if _info_acc >= 0.1:      # counts + minimap + territory at 10 Hz
 					_info_acc = 0.0
 					_update_info()
 					_minimap.refresh()
+					_refresh_territory()
 			_age_fx(delta)
 			_update_camera(delta)
 			queue_redraw()
@@ -287,6 +332,7 @@ func _move_actors(dt: float) -> void:
 			target = _human_target
 		elif p.pending_dir != Vector2i.ZERO:
 			target = Vector2(p.pending_dir).angle()
+		var old_pos := p.pos
 		var diff := angle_difference(p.heading, target)
 		var rate := (TURN_RATE if p.is_human else BOT_TURN) * dt
 		p.heading += clampf(diff, -rate, rate)
@@ -299,6 +345,19 @@ func _move_actors(dt: float) -> void:
 			clampf(p.pos.y, m, H * CELL - m))
 		if clamped != p.pos:
 			p.pos = clamped
+			if p.is_out:
+				_kill(p, null, "wall")
+				continue
+		# Coastline: water is out of bounds too — slide along it if possible.
+		if not land(int(p.pos.x / CELL), int(p.pos.y / CELL)):
+			var sx := Vector2(p.pos.x, old_pos.y)
+			var sy := Vector2(old_pos.x, p.pos.y)
+			if land(int(sx.x / CELL), int(sx.y / CELL)):
+				p.pos = sx
+			elif land(int(sy.x / CELL), int(sy.y / CELL)):
+				p.pos = sy
+			else:
+				p.pos = old_pos
 			if p.is_out:
 				_kill(p, null, "wall")
 				continue
@@ -388,12 +447,18 @@ func _commit(p: InkPlayer) -> void:
 	var visited := PackedByteArray()
 	visited.resize(W * H)
 	var stack: Array[int] = []
-	for x in range(W):
-		_seed(idx(x, 0), p.id, visited, stack)
-		_seed(idx(x, H - 1), p.id, visited, stack)
+	# Seeds: every non-owner LAND cell touching water or the board edge (the
+	# coastline is the wall of this arena).
 	for y in range(H):
-		_seed(idx(0, y), p.id, visited, stack)
-		_seed(idx(W - 1, y), p.id, visited, stack)
+		for x in range(W):
+			var i2 := idx(x, y)
+			if _land[i2] == 0:
+				visited[i2] = 1          # water is never captured
+				continue
+			if x == 0 or y == 0 or x == W - 1 or y == H - 1 \
+					or _land[idx(x - 1, y)] == 0 or _land[idx(x + 1, y)] == 0 \
+					or _land[idx(x, y - 1)] == 0 or _land[idx(x, y + 1)] == 0:
+				_seed(i2, p.id, visited, stack)
 
 	while not stack.is_empty():
 		var i: int = stack.pop_back()
@@ -505,7 +570,7 @@ func _open_dir(p: InkPlayer) -> Vector2i:
 		for s in range(1, 9):
 			var x := p.cx + d.x * s
 			var y := p.cy + d.y * s
-			if not in_bounds(x, y):
+			if not in_bounds(x, y) or _land[idx(x, y)] == 0:
 				break
 			if grid[idx(x, y)] != p.id:
 				score += 1
@@ -522,8 +587,10 @@ func _steer(p: InkPlayer, want: Vector2i) -> void:
 			continue
 		if not _safe_cell(p, p.cx + d.x, p.cy + d.y):
 			continue
+		if not land(p.cx + d.x, p.cy + d.y):
+			continue
 		# Mid-trail, also look two cells ahead so arcs don't drift into walls.
-		if p.is_out and not in_bounds(p.cx + d.x * 2, p.cy + d.y * 2):
+		if p.is_out and not land(p.cx + d.x * 2, p.cy + d.y * 2):
 			continue
 		p.pending_dir = d
 		return
@@ -850,7 +917,7 @@ func _update_info() -> void:
 		_counts[i] = 0
 	for i in grid.size():
 		_counts[grid[i]] += 1
-	var total := float(W * H)
+	var total := float(_land_total)
 	var you := _counts[1] * 100.0 / total
 	_max_pct = maxf(_max_pct, you)
 	if _pct_label != null:
@@ -1115,6 +1182,52 @@ func _build_results_panel() -> PanelContainer:
 
 # ------------------------------------------------------------------- render --
 
+## Rebuild the smooth territory texture from the grid (linear-filtered when
+## drawn, so region edges read as smooth curves, not stepped tiles).
+func _refresh_territory() -> void:
+	var bt := Game.country_tint()
+	var paper := Color(BG_TOP.r * bt.r, BG_TOP.g * bt.g, BG_TOP.b * bt.b)
+	for y in H:
+		for x in W:
+			var i3 := idx(x, y)
+			if _land[i3] == 0:
+				_terr_img.set_pixel(x, y, WATER)
+			else:
+				var o := grid[i3]
+				_terr_img.set_pixel(x, y, paper if o == 0 else players[o - 1].color)
+	_terr_tex.update(_terr_img)
+
+## Rasterize the current country's silhouette into the land mask — the arena
+## IS the country (paper.io-2 style). Unknown countries get a seeded island.
+func _build_land_mask() -> void:
+	_land.resize(W * H)
+	var cname: String = Game.COUNTRIES[Game.country_idx].name
+	var poly := PackedVector2Array()
+	if COUNTRY_SHAPES.has(cname):
+		for v in COUNTRY_SHAPES[cname]:
+			poly.append(v)
+	else:
+		var seed_f := float(Game.country_idx)
+		for k in 14:
+			var ang := TAU * k / 14.0
+			var rad := 0.34 + 0.10 * sin(k * 2.7 + seed_f) + 0.06 * sin(k * 4.3 + seed_f * 2.0)
+			poly.append(Vector2(0.5, 0.5) + Vector2(cos(ang), sin(ang) * 0.9) * rad)
+	# Fit with a small margin; grid is portrait so shapes sit centred.
+	var m := 0.05
+	_land_total = 0
+	for y in H:
+		for x in W:
+			var pnt := Vector2(m + (1.0 - 2.0 * m) * (x + 0.5) / W,
+				m + (1.0 - 2.0 * m) * (y + 0.5) / H)
+			var inside := Geometry2D.is_point_in_polygon(pnt, poly)
+			_land[idx(x, y)] = 1 if inside else 0
+			if inside:
+				_land_total += 1
+	_land_total = maxi(_land_total, 1)
+
+func land(x: int, y: int) -> bool:
+	return in_bounds(x, y) and _land[idx(x, y)] == 1
+
 func _visible_cells() -> Rect2i:
 	var vp := get_viewport_rect().size / CAM_ZOOM
 	var c := cam.position if cam != null else _cell_center(W / 2, H / 2)
@@ -1129,17 +1242,11 @@ func _draw() -> void:
 	draw_rect(Rect2(-CELL * 8, -CELL * 8, board.size.x + CELL * 16, board.size.y + CELL * 16), VOID)
 	_draw_vgradient(board, BG_TOP, BG_BOT)
 
-	# Territory fills — only the visible window (fine grid = smooth, no big tiles).
-	var vis := _visible_cells()
-	for y in range(vis.position.y, vis.position.y + vis.size.y + 1):
-		for x in range(vis.position.x, vis.position.x + vis.size.x + 1):
-			var o := grid[idx(x, y)]
-			if o == 0:
-				continue
-			var fill: Color = players[o - 1].color
-			fill.a = 0.9
-			draw_rect(Rect2(x * CELL, y * CELL, CELL + 0.5, CELL + 0.5), fill)
-	_draw_region_outlines(vis)
+	# Territory — one smooth linear-filtered texture (paper.io-style edges,
+	# no visible tiles/steps). Half-texel inset keeps it aligned to cells.
+	if _terr_tex != null:
+		draw_texture_rect(_terr_tex,
+			Rect2(-CELL * 0.5, -CELL * 0.5, (W + 1) * CELL, (H + 1) * CELL), false)
 
 
 	# Capture flash: freshly claimed cells blink white and fade.
@@ -1161,10 +1268,13 @@ func _draw() -> void:
 			pts.append(_cell_center(c.x, c.y))
 		if p.alive and p.is_out:
 			pts.append(_head_visual(p))
-		for pt in pts:
-			draw_circle(pt, w * 0.5, col)
+		pts = _chaikin(_chaikin(pts))     # smooth curve — no stair-steps
 		if pts.size() >= 2:
+			draw_circle(pts[0], w * 0.5, col)
+			draw_circle(pts[pts.size() - 1], w * 0.5, col)
 			draw_polyline(pts, col, w)
+		elif pts.size() == 1:
+			draw_circle(pts[0], w * 0.5, col)
 
 	# Heads — interpolated blobs with faces, then name tags.
 	for p in players:
@@ -1196,6 +1306,18 @@ func _draw() -> void:
 			var col2: Color = f.color
 			col2.a = a2
 			draw_arc(f.pos, (1.0 - a2) * CELL * 3.2 + CELL * 0.5, 0, TAU, 24, col2, 3.0)
+
+## One Chaikin corner-cutting pass (call twice for silky trails).
+static func _chaikin(pts: PackedVector2Array) -> PackedVector2Array:
+	if pts.size() < 3:
+		return pts
+	var out := PackedVector2Array()
+	out.append(pts[0])
+	for i in range(pts.size() - 1):
+		out.append(pts[i].lerp(pts[i + 1], 0.25))
+		out.append(pts[i].lerp(pts[i + 1], 0.75))
+	out.append(pts[pts.size() - 1])
+	return out
 
 # --- drawing helpers ---------------------------------------------------------
 

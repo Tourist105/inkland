@@ -15,10 +15,14 @@ func setup(arena_) -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 func refresh() -> void:
-	var neutral := Color(1, 1, 1, 0.45)
+	var neutral := Color(1, 1, 1, 0.55)
 	for y in arena.H:
 		for x in arena.W:
-			var o: int = arena.grid[y * arena.W + x]
+			var i: int = y * arena.W + x
+			if arena._land[i] == 0:
+				_img.set_pixel(x, y, Color(0.47, 0.58, 0.72, 0.9))
+				continue
+			var o: int = arena.grid[i]
 			_img.set_pixel(x, y, neutral if o == 0 else arena.players[o - 1].color)
 	_tex.update(_img)
 	queue_redraw()
