@@ -15,15 +15,17 @@ extends Node2D
 
 const InkPlayer = preload("res://scripts/Player.gd")
 
-const W := 56
-const H := 96
-const CELL := 20.0
+const W := 112
+const H := 192
+const CELL := 10.0
+const TRAIL_W := 12.0        # fixed px so finer grid keeps chunky trails
+const HEAD_R := 12.0
 const TICK := 0.10          # bot-brain cadence (movement itself is continuous)
 const SPEED := 200.0        # px/s — one cell per TICK, like the grid era
 const TURN_RATE := 4.8      # rad/s, human (paper.io-2-style arc turns)
 const BOT_TURN := 4.0
 const RESPAWN := 2.0
-const START_RADIUS := 2
+const START_RADIUS := 4
 const BOT_COUNT := 5
 
 const CAM_ZOOM := 2.6       # >1 zooms in (close chase view)
@@ -132,7 +134,7 @@ func _spawn_players() -> void:
 	me.face = skin.face
 	me.is_human = true
 	me.display_name = tr("T_YOU")
-	me.home = Vector2i(W / 2, H - 14)
+	me.home = Vector2i(W / 2, H - 28)
 	players.append(me)
 	human = me
 
@@ -140,8 +142,8 @@ func _spawn_players() -> void:
 	var names := BOT_NAMES.duplicate()
 	names.shuffle()
 	var homes := [
-		Vector2i(10, 12), Vector2i(W - 11, 14), Vector2i(9, H / 2),
-		Vector2i(W - 10, H / 2 + 6), Vector2i(W / 2, 16),
+		Vector2i(20, 24), Vector2i(W - 22, 28), Vector2i(18, H / 2),
+		Vector2i(W - 20, H / 2 + 12), Vector2i(W / 2, 32),
 	]
 	# Difficulty scales with the player's proven skill (best %): rookies get
 	# timid bots, record-chasers get hunters. Keeps rounds tense but fair.
@@ -191,7 +193,7 @@ func _respawn(p: InkPlayer) -> void:
 	p.trail.clear()
 	var rad := START_RADIUS
 	if p.is_human and Game.start_boost:
-		rad = 5                        # rewarded "start big" (~5x area)
+		rad = 10                       # rewarded "start big" (~5x area)
 		Game.start_boost = false
 		Game.save_state()
 	for y in range(p.home.y - rad, p.home.y + rad + 1):
@@ -329,8 +331,14 @@ func _enter_cell(p: InkPlayer, nx: int, ny: int) -> void:
 				_add_text_fx(_cell_center(nx, ny), "+1", p.color)
 			_kill(victim, p, "cut")
 		else:
-			_kill(victim, null, "self")
-			return                      # we crossed our own line — done
+			# Crossing your OWN trail closes the loop and claims it — no death.
+			p.cx = nx
+			p.cy = ny
+			_commit(p)
+			p.is_out = false
+			p.going_home = false
+			p.plan.clear()
+			return
 	if state != State.PLAYING or not p.alive:
 		return
 	p.cx = nx
@@ -433,10 +441,12 @@ func _bot_think(p: InkPlayer) -> void:
 			_steer(p, _axis_dir(p, hunt))
 			return
 	if p.is_out:
-		var max_out := 8 + int(p.greed * 18.0)
-		if p.trail.size() >= max_out or p.plan.is_empty():
+		# Finish the planned sweep unless the trail gets dangerously long or a
+		# rival is closing in — then curl back to the nearest owned cell.
+		var hard_cap := 40 + int(p.greed * 40.0)
+		if p.trail.size() >= hard_cap or p.plan.is_empty():
 			p.going_home = true
-		if not p.going_home and _threat_dist(p) < 3.0 + p.caution * 4.0:
+		if not p.going_home and _threat_dist(p) < 2.5 + p.caution * 3.5:
 			p.going_home = true
 		if p.going_home:
 			_steer(p, _dir_home(p))
@@ -444,24 +454,36 @@ func _bot_think(p: InkPlayer) -> void:
 			_follow_plan(p)
 	else:
 		p.going_home = false
-		if p.plan.is_empty() and randf() < 0.10 + p.greed * 0.08:
-			_make_plan(p)
-		if not p.plan.is_empty():
-			_follow_plan(p)
-		elif randf() < 0.25:
-			_steer(p, _dir_toward(p, p.home))
+		if p.plan.is_empty():
+			_make_plan(p)              # always carving — no idle straight lines
+		_follow_plan(p)
 
-## Plan a rectangular excursion: out, across, and back toward the territory.
+## Plan a WIDE border sweep: push out from our frontier, run a long way
+## parallel to it (claiming a broad strip), then cut back in. This carves big
+## organic rectangles along the territory edge instead of thin straight lines.
 func _make_plan(p: InkPlayer) -> void:
-	var d0 := _open_dir(p)
-	var perp := Vector2i(-d0.y, d0.x) if randf() < 0.5 else Vector2i(d0.y, -d0.x)
-	var a := 3 + int(randf() * (3.0 + p.greed * 7.0))
-	var b := 2 + int(randf() * (2.0 + p.greed * 6.0))
-	p.plan = [
-		{"dir": d0, "steps": a},
-		{"dir": perp, "steps": b},
-		{"dir": -d0, "steps": a},
-	]
+	var out_dir := _open_dir(p)
+	var along := Vector2i(-out_dir.y, out_dir.x)
+	if randf() < 0.5:
+		along = -along
+	var depth := 5 + int(randf() * (6.0 + p.greed * 12.0))    # how far out
+	var width := 10 + int(randf() * (12.0 + p.greed * 28.0))  # long sweep leg
+	# Optional dog-leg so shapes vary (L-sweep) rather than a plain rectangle.
+	if randf() < 0.5:
+		var w2 := int(width * randf_range(0.3, 0.6))
+		p.plan = [
+			{"dir": out_dir, "steps": depth},
+			{"dir": along, "steps": w2},
+			{"dir": out_dir, "steps": int(depth * 0.6) + 1},
+			{"dir": along, "steps": width - w2},
+			{"dir": -out_dir, "steps": depth + int(depth * 0.6) + 2},
+		]
+	else:
+		p.plan = [
+			{"dir": out_dir, "steps": depth},
+			{"dir": along, "steps": width},
+			{"dir": -out_dir, "steps": depth + 2},
+		]
 
 func _follow_plan(p: InkPlayer) -> void:
 	if p.plan.is_empty():
@@ -560,12 +582,9 @@ func _threat_dist(p: InkPlayer) -> float:
 	return float(best)
 
 func _dir_home(p: InkPlayer) -> Vector2i:
-	var target := p.home
-	if grid[idx(target.x, target.y)] != p.id:
-		target = _nearest_owned(p)
-		if target == Vector2i(-1, -1):
-			return p.dir            # no land left — doomed, keep running
-		p.home = target
+	var target := _nearest_owned(p)
+	if target == Vector2i(-1, -1):
+		return p.dir                # no land left — doomed, keep running
 	return _axis_dir(p, target)
 
 func _dir_toward(p: InkPlayer, target: Vector2i) -> Vector2i:
@@ -664,7 +683,7 @@ func _human_died(cause: String, killer: InkPlayer) -> void:
 	if not _revive_used and Ads.rewarded_ready():
 		_show_continue_offer(subtitle)
 	else:
-		_show_results(subtitle, false)
+		Ads.maybe_interstitial(func() -> void: _show_results(subtitle, false))
 
 func _round_won() -> void:
 	state = State.OVER
@@ -1096,23 +1115,31 @@ func _build_results_panel() -> PanelContainer:
 
 # ------------------------------------------------------------------- render --
 
+func _visible_cells() -> Rect2i:
+	var vp := get_viewport_rect().size / CAM_ZOOM
+	var c := cam.position if cam != null else _cell_center(W / 2, H / 2)
+	var x0 := clampi(int((c.x - vp.x * 0.5) / CELL) - 1, 0, W - 1)
+	var x1 := clampi(int((c.x + vp.x * 0.5) / CELL) + 1, 0, W - 1)
+	var y0 := clampi(int((c.y - vp.y * 0.5) / CELL) - 1, 0, H - 1)
+	var y1 := clampi(int((c.y + vp.y * 0.5) / CELL) + 1, 0, H - 1)
+	return Rect2i(x0, y0, x1 - x0, y1 - y0)
+
 func _draw() -> void:
 	var board := Rect2(0, 0, W * CELL, H * CELL)
-	draw_rect(Rect2(-CELL * 4, -CELL * 4, board.size.x + CELL * 8, board.size.y + CELL * 8), VOID)
+	draw_rect(Rect2(-CELL * 8, -CELL * 8, board.size.x + CELL * 16, board.size.y + CELL * 16), VOID)
 	_draw_vgradient(board, BG_TOP, BG_BOT)
 
-	# Territory fills (flat) plus a darker outline on each region's exposed
-	# edges — gives a clean, modern silhouette.
-	for y in range(H):
-		for x in range(W):
+	# Territory fills — only the visible window (fine grid = smooth, no big tiles).
+	var vis := _visible_cells()
+	for y in range(vis.position.y, vis.position.y + vis.size.y + 1):
+		for x in range(vis.position.x, vis.position.x + vis.size.x + 1):
 			var o := grid[idx(x, y)]
 			if o == 0:
 				continue
-			var base: Color = players[o - 1].color
-			var fill := base
-			fill.a = 0.88
-			draw_rect(Rect2(x * CELL, y * CELL, CELL, CELL), fill)
-	_draw_region_outlines()
+			var fill: Color = players[o - 1].color
+			fill.a = 0.9
+			draw_rect(Rect2(x * CELL, y * CELL, CELL + 0.5, CELL + 0.5), fill)
+	_draw_region_outlines(vis)
 
 
 	# Capture flash: freshly claimed cells blink white and fade.
@@ -1128,7 +1155,7 @@ func _draw() -> void:
 		if p.trail.is_empty():
 			continue
 		var col: Color = p.color.lightened(0.15)
-		var w := CELL * 0.66
+		var w := TRAIL_W
 		var pts := PackedVector2Array()
 		for c in p.trail:
 			pts.append(_cell_center(c.x, c.y))
@@ -1143,7 +1170,7 @@ func _draw() -> void:
 	for p in players:
 		if p.alive:
 			var c := _head_visual(p)
-			SkinArt.draw_blob(self, c, CELL * 0.62, p.color, p.face,
+			SkinArt.draw_blob(self, c, HEAD_R, p.color, p.face,
 				Vector2.from_angle(p.heading))
 	var font := ThemeDB.fallback_font
 	for p in players:
@@ -1184,9 +1211,9 @@ func _owned(x: int, y: int, owner: int) -> bool:
 
 ## Darker border line along every edge where an owned cell meets a different
 ## owner — crisp region outlines on the cheap.
-func _draw_region_outlines() -> void:
-	for y in range(H):
-		for x in range(W):
+func _draw_region_outlines(vis: Rect2i) -> void:
+	for y in range(vis.position.y, vis.position.y + vis.size.y + 1):
+		for x in range(vis.position.x, vis.position.x + vis.size.x + 1):
 			var o := grid[idx(x, y)]
 			if o == 0:
 				continue
@@ -1195,10 +1222,10 @@ func _draw_region_outlines() -> void:
 			var ox := x * CELL
 			var oy := y * CELL
 			if not _owned(x, y - 1, o):
-				draw_line(Vector2(ox, oy), Vector2(ox + CELL, oy), edge, 2.0)
+				draw_line(Vector2(ox, oy), Vector2(ox + CELL, oy), edge, 1.5)
 			if not _owned(x, y + 1, o):
-				draw_line(Vector2(ox, oy + CELL), Vector2(ox + CELL, oy + CELL), edge, 2.0)
+				draw_line(Vector2(ox, oy + CELL), Vector2(ox + CELL, oy + CELL), edge, 1.5)
 			if not _owned(x - 1, y, o):
-				draw_line(Vector2(ox, oy), Vector2(ox, oy + CELL), edge, 2.0)
+				draw_line(Vector2(ox, oy), Vector2(ox, oy + CELL), edge, 1.5)
 			if not _owned(x + 1, y, o):
-				draw_line(Vector2(ox + CELL, oy), Vector2(ox + CELL, oy + CELL), edge, 2.0)
+				draw_line(Vector2(ox + CELL, oy), Vector2(ox + CELL, oy + CELL), edge, 1.5)

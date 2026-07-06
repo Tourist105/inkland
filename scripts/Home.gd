@@ -144,14 +144,11 @@ func _build() -> void:
 	if OS.get_environment("STORE_MODE") != "":
 		return
 	var banner := TestBanner.make()
-	banner.anchor_left = 0.5
-	banner.anchor_right = 0.5
+	banner.anchor_left = 0.0
+	banner.anchor_right = 1.0
 	banner.anchor_top = 1.0
 	banner.anchor_bottom = 1.0
-	banner.offset_left = -160
-	banner.offset_right = 160
-	banner.offset_top = -60
-	banner.offset_bottom = -8
+	banner.offset_top = -TestBanner.H
 	add_child(banner)
 
 # ----------------------------------------------------------------- overlays --
