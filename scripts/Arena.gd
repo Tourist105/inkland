@@ -397,7 +397,13 @@ func _enter_cell(p: InkPlayer, nx: int, ny: int) -> void:
 				_add_text_fx(_cell_center(nx, ny), "+1", p.color)
 			_kill(victim, p, "cut")
 		else:
-			# Crossing your OWN trail closes the loop and claims it — no death.
+			# Touching the tail right behind the head is just jitter — ignore.
+			var t_pos := p.trail.rfind(Vector2i(nx, ny))
+			if t_pos >= 0 and p.trail.size() - t_pos <= 4:
+				p.cx = nx
+				p.cy = ny
+				return
+			# A REAL crossing of your own trail closes the loop and claims it.
 			p.cx = nx
 			p.cy = ny
 			_commit(p)
@@ -486,7 +492,8 @@ func _commit(p: InkPlayer) -> void:
 		if visited[i] == 0 and grid[i] != p.id:
 			grid[i] = p.id
 			gained += 1
-			_flash[i] = 0.45
+	if gained > 0:
+		_refresh_territory()          # show the claim instantly
 	if gained > 0 and p.is_human:
 		Sfx.play("capture", 0.9 + randf() * 0.2)
 		Sfx.haptic(25)
@@ -1204,6 +1211,7 @@ func _refresh_territory() -> void:
 	_tex_a.update(_mask_a)
 	_tex_b.update(_mask_b)
 
+
 ## Smoothstep-sharpened bilinear masks = mathematically smooth region edges
 ## (the real paper.io look — no stairs, no blur).
 const TERR_SHADER_A := """
@@ -1213,9 +1221,17 @@ uniform vec4 paper : source_color;
 uniform vec4 p1 : source_color;
 uniform vec4 p2 : source_color;
 uniform vec4 p3 : source_color;
-const float AA = 0.16;
+const float AA = 0.24;
+vec4 blur9(sampler2D tex, vec2 uv, vec2 px) {
+	vec4 m = texture(tex, uv) * 0.25;
+	m += (texture(tex, uv + vec2(px.x, 0.0)) + texture(tex, uv - vec2(px.x, 0.0))
+		+ texture(tex, uv + vec2(0.0, px.y)) + texture(tex, uv - vec2(0.0, px.y))) * 0.125;
+	m += (texture(tex, uv + px) + texture(tex, uv - px)
+		+ texture(tex, uv + vec2(px.x, -px.y)) + texture(tex, uv - vec2(px.x, -px.y))) * 0.0625;
+	return m;
+}
 void fragment() {
-	vec4 m = texture(TEXTURE, UV);
+	vec4 m = blur9(TEXTURE, UV, TEXTURE_PIXEL_SIZE);
 	vec3 c = water.rgb;
 	c = mix(c, paper.rgb, smoothstep(0.5 - AA, 0.5 + AA, m.r));
 	c = mix(c, p1.rgb, smoothstep(0.5 - AA, 0.5 + AA, m.g));
@@ -1229,9 +1245,17 @@ shader_type canvas_item;
 uniform vec4 p4 : source_color;
 uniform vec4 p5 : source_color;
 uniform vec4 p6 : source_color;
-const float AA = 0.16;
+const float AA = 0.24;
+vec4 blur9(sampler2D tex, vec2 uv, vec2 px) {
+	vec4 m = texture(tex, uv) * 0.25;
+	m += (texture(tex, uv + vec2(px.x, 0.0)) + texture(tex, uv - vec2(px.x, 0.0))
+		+ texture(tex, uv + vec2(0.0, px.y)) + texture(tex, uv - vec2(0.0, px.y))) * 0.125;
+	m += (texture(tex, uv + px) + texture(tex, uv - px)
+		+ texture(tex, uv + vec2(px.x, -px.y)) + texture(tex, uv - vec2(px.x, -px.y))) * 0.0625;
+	return m;
+}
 void fragment() {
-	vec4 m = texture(TEXTURE, UV);
+	vec4 m = blur9(TEXTURE, UV, TEXTURE_PIXEL_SIZE);
 	vec4 o = vec4(0.0);
 	float a;
 	a = smoothstep(0.5 - AA, 0.5 + AA, m.r); o = mix(o, vec4(p4.rgb, 1.0), a);
@@ -1319,19 +1343,11 @@ func _visible_cells() -> Rect2i:
 	return Rect2i(x0, y0, x1 - x0, y1 - y0)
 
 func _draw() -> void:
-	var board := Rect2(0, 0, W * CELL, H * CELL)
-	draw_rect(Rect2(-CELL * 8, -CELL * 8, board.size.x + CELL * 16, board.size.y + CELL * 16), VOID)
-	_draw_vgradient(board, BG_TOP, BG_BOT)
+	# Water/paper/territory come from the shader layers (z -1/-2) below.
 
 
 
 
-	# Capture flash: freshly claimed cells blink white and fade.
-	for k in _flash:
-		var a: float = _flash[k] / 0.45
-		var fx: int = k % W
-		var fy: int = k / W
-		draw_rect(Rect2(fx * CELL, fy * CELL, CELL, CELL), Color(1, 1, 1, 0.55 * a))
 
 	# Active trails: one continuous rounded ribbon per player, glued to the
 	# interpolated head so the line flows instead of stepping.

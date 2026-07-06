@@ -54,25 +54,27 @@ static func card(bg := PAPER, radius := 24) -> StyleBoxFlat:
 	s.content_margin_bottom = 22
 	return s
 
-## Shared menu background: soft vertical gradient + faint paper grid.
+## Shared menu background: rich sky gradient + big soft colour glows.
 static func draw_bg(ci: CanvasItem, size: Vector2) -> void:
-	var bands := 20
-	var top := Color(0.965, 0.975, 0.995)
-	var bot := Color(0.895, 0.92, 0.965)
+	var bands := 28
+	var top := Color(0.42, 0.66, 1.00)
+	var mid := Color(0.72, 0.85, 1.00)
+	var bot := Color(0.97, 0.98, 1.00)
 	var bh := size.y / bands
 	for b in range(bands):
-		ci.draw_rect(Rect2(0, b * bh, size.x, bh + 1.0),
-			top.lerp(bot, float(b) / float(bands - 1)))
-	var line := Color(0, 0, 0, 0.03)
-	var step := 48.0
-	var x := step
-	while x < size.x:
-		ci.draw_line(Vector2(x, 0), Vector2(x, size.y), line, 1.0)
-		x += step
-	var y := step
-	while y < size.y:
-		ci.draw_line(Vector2(0, y), Vector2(size.x, y), line, 1.0)
-		y += step
+		var t := float(b) / float(bands - 1)
+		var c := top.lerp(mid, t / 0.45) if t < 0.45 else mid.lerp(bot, (t - 0.45) / 0.55)
+		ci.draw_rect(Rect2(0, b * bh, size.x, bh + 1.0), c)
+	# Big soft glows (fake blur via concentric alpha circles).
+	for g in [[0.15, 0.18, 320.0, Color(1.0, 0.75, 0.35)],
+			[0.9, 0.32, 380.0, Color(0.55, 0.45, 1.0)],
+			[0.45, 0.85, 420.0, Color(0.35, 0.85, 0.65)]]:
+		var cpos := Vector2(g[0] * size.x, g[1] * size.y)
+		for k in 5:
+			var rr: float = g[2] * (1.0 - k * 0.16)
+			var cc: Color = g[3]
+			cc.a = 0.035
+			ci.draw_circle(cpos, rr, cc)
 
 ## Full-screen dim behind modal panels.
 static func dim() -> ColorRect:
