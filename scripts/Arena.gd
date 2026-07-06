@@ -784,6 +784,11 @@ func _update_info() -> void:
 	for p in players:
 		order.append([_counts[p.id], p])
 	order.sort_custom(func(a, b): return a[0] > b[0])
+	# Live rank next to your % — the paper.io "am I winning?" pulse.
+	for r2 in order.size():
+		if order[r2][1] == human:
+			_pct_label.text = "%.1f%%   #%d" % [you, r2 + 1]
+			break
 	for r in 3:
 		if r >= _lb_labels.size():
 			break
