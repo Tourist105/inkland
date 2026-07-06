@@ -81,6 +81,8 @@ var _pct_label: Label
 var _bar_fill: Panel
 var _lb_dots: Array[Panel] = []
 var _lb_labels: Array[Label] = []
+var _minimap: MiniMap
+var _info_acc := 0.0
 var _count_label: Label
 var _hint_label: Label
 var _dim: ColorRect
@@ -242,7 +244,11 @@ func _process(delta: float) -> void:
 				_think_tick()
 			if state == State.PLAYING:
 				_move_actors(minf(delta, 1.0 / 30.0))
-				_update_info()
+				_info_acc += delta
+				if _info_acc >= 0.1:      # counts + minimap at 10 Hz
+					_info_acc = 0.0
+					_update_info()
+					_minimap.refresh()
 			_age_fx(delta)
 			_update_camera(delta)
 			queue_redraw()
@@ -413,9 +419,14 @@ func _seed(i: int, owner: int, visited: PackedByteArray, stack: Array[int]) -> v
 ## flee home), aggro (hunting enemy trails).
 
 func _bot_think(p: InkPlayer) -> void:
-	# Opportunistic cut — an enemy trail right next door is a free elimination.
-	if randf() < 0.25 + p.aggro * 0.6 and _try_cut(p):
-		return
+	# Hunt: cut an adjacent enemy trail, or chase one spotted nearby.
+	if randf() < 0.25 + p.aggro * 0.6:
+		if _try_cut(p):
+			return
+		var hunt := _find_enemy_trail(p, 6)
+		if hunt.x >= 0 and (not p.is_out or p.trail.size() < 14):
+			_steer(p, _axis_dir(p, hunt))
+			return
 	if p.is_out:
 		var max_out := 8 + int(p.greed * 18.0)
 		if p.trail.size() >= max_out or p.plan.is_empty():
@@ -482,15 +493,37 @@ func _steer(p: InkPlayer, want: Vector2i) -> void:
 	for d: Vector2i in [want, p.dir, side, -side]:
 		if d == Vector2i.ZERO or d == -p.dir:
 			continue
-		if _safe_cell(p, p.cx + d.x, p.cy + d.y):
-			p.pending_dir = d
-			return
+		if not _safe_cell(p, p.cx + d.x, p.cy + d.y):
+			continue
+		# Mid-trail, also look two cells ahead so arcs don't drift into walls.
+		if p.is_out and not in_bounds(p.cx + d.x * 2, p.cy + d.y * 2):
+			continue
+		p.pending_dir = d
+		return
 	# Nothing is safe — keep going and hope.
 
 func _safe_cell(p: InkPlayer, x: int, y: int) -> bool:
 	if not in_bounds(x, y):
 		return false
 	return trail_owner[idx(x, y)] != p.id   # own trail = certain death
+
+## Nearest enemy trail cell within a scan window (for hunting).
+func _find_enemy_trail(p: InkPlayer, radius: int) -> Vector2i:
+	var best := Vector2i(-1, -1)
+	var bd := 999
+	for dy in range(-radius, radius + 1):
+		for dx in range(-radius, radius + 1):
+			var x := p.cx + dx
+			var y := p.cy + dy
+			if not in_bounds(x, y):
+				continue
+			var to := trail_owner[idx(x, y)]
+			if to != 0 and to != p.id:
+				var d := absi(dx) + absi(dy)
+				if d < bd:
+					bd = d
+					best = Vector2i(x, y)
+	return best
 
 ## Step onto an adjacent enemy trail if there is one (a free kill).
 func _try_cut(p: InkPlayer) -> bool:
@@ -701,8 +734,16 @@ func _show_results(subtitle: String, won: bool) -> void:
 	(v.get_node("Title") as Label).text = tr("T_RES_WIN") if won else subtitle
 	(v.get_node("Pct") as Label).text = "%.1f%%" % _final_pct
 	(v.get_node("Best") as Label).visible = is_best
-	(v.get_node("Stats") as Label).text = "%s  %d      %s  %.1f%%" % [
-		tr("T_KILLS"), human.kills, tr("T_BEST"), Game.best_pct]
+	var prev_country: String = Game.COUNTRIES[Game.country_idx].name
+	var cbonus := Game.add_country_progress(_max_pct)
+	var cd: Dictionary = Game.COUNTRIES[Game.country_idx]
+	var cline := "%s  %d/%d%%" % [cd.name, int(Game.country_fill), int(cd.size)]
+	if cbonus > 0:
+		cline = (tr("T_CONQUERED") % prev_country) + "  +%d
+%s" % [cbonus, cline]
+	(v.get_node("Stats") as Label).text = "%s  %d      %s  %.1f%%
+%s" % [
+		tr("T_KILLS"), human.kills, tr("T_BEST"), Game.best_pct, cline]
 	(v.get_node("CoinsRow") as HBoxContainer).visible = _earned > 0
 	(v.get_node("CoinsRow/Amount") as Label).text = "+%d" % _earned
 	var dbl: Button = v.get_node("Double")
@@ -879,6 +920,18 @@ func _build_hud() -> void:
 		_lb_dots.append(dot)
 		_lb_labels.append(lab)
 
+	# Minimap — whole-arena overview, top right under the leaderboard.
+	_minimap = MiniMap.new()
+	_minimap.setup(self)
+	_minimap.anchor_left = 1.0
+	_minimap.anchor_right = 1.0
+	_minimap.offset_left = -108
+	_minimap.offset_right = -16
+	_minimap.offset_top = 238
+	_minimap.offset_bottom = 396
+	root.add_child(_minimap)
+	_minimap.refresh()
+
 	# Countdown / GO, centred.
 	_count_label = Ui.label("3", 130, Ui.INK)
 	_count_label.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -1043,11 +1096,6 @@ func _draw() -> void:
 			draw_rect(Rect2(x * CELL, y * CELL, CELL, CELL), fill)
 	_draw_region_outlines()
 
-	# Subtle grid lines for the paper-grid feel.
-	for x in range(W + 1):
-		draw_line(Vector2(x * CELL, 0), Vector2(x * CELL, H * CELL), GRID_LINE, 1.0)
-	for y in range(H + 1):
-		draw_line(Vector2(0, y * CELL), Vector2(W * CELL, y * CELL), GRID_LINE, 1.0)
 
 	# Capture flash: freshly claimed cells blink white and fade.
 	for k in _flash:

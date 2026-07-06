@@ -47,6 +47,23 @@ var haptics_on := true
 var locale := ""            # "" = follow system
 var last_bonus_day := ""
 var seen_help := false
+var country_idx := 0
+var country_fill := 0.0
+
+## Country-conquest meta (paper.io-2 style): every round's best territory %
+## fills the current country; complete it for a bonus and the next country.
+const COUNTRIES := [
+	{"name": "Switzerland", "size": 100}, {"name": "Austria", "size": 130},
+	{"name": "Netherlands", "size": 150}, {"name": "Portugal", "size": 170},
+	{"name": "Greece", "size": 190}, {"name": "Italy", "size": 220},
+	{"name": "Germany", "size": 250}, {"name": "France", "size": 280},
+	{"name": "Spain", "size": 300}, {"name": "Poland", "size": 320},
+	{"name": "United Kingdom", "size": 350}, {"name": "Turkey", "size": 380},
+	{"name": "Japan", "size": 420}, {"name": "Brazil", "size": 470},
+	{"name": "USA", "size": 520}, {"name": "World", "size": 999},
+]
+const COUNTRY_TINTS := [Color(1, 1, 1), Color(1.0, 0.97, 0.90),
+	Color(0.92, 0.97, 1.0), Color(0.94, 1.0, 0.94), Color(1.0, 0.94, 0.96)]
 
 func _ready() -> void:
 	load_state()
@@ -63,6 +80,23 @@ func claim_daily() -> int:
 	add_coins(50)
 	return 50
 
+
+## Add a round's % to the country; returns bonus coins if one was completed.
+func add_country_progress(pct: float) -> int:
+	country_fill += pct
+	var bonus := 0
+	while country_idx < COUNTRIES.size() - 1 			and country_fill >= float(COUNTRIES[country_idx].size):
+		country_fill -= float(COUNTRIES[country_idx].size)
+		country_idx += 1
+		bonus += 150
+	if bonus > 0:
+		add_coins(bonus)
+	else:
+		save_state()
+	return bonus
+
+func country_tint() -> Color:
+	return COUNTRY_TINTS[country_idx % COUNTRY_TINTS.size()]
 
 func add_coins(n: int) -> void:
 	coins += n
@@ -133,6 +167,8 @@ func save_state() -> void:
 	cf.set_value("s", "locale", locale)
 	cf.set_value("s", "last_bonus_day", last_bonus_day)
 	cf.set_value("s", "seen_help", seen_help)
+	cf.set_value("s", "country_idx", country_idx)
+	cf.set_value("s", "country_fill", country_fill)
 	cf.save(SAVE_PATH)
 
 func load_state() -> void:
@@ -149,5 +185,7 @@ func load_state() -> void:
 	locale = cf.get_value("s", "locale", "")
 	last_bonus_day = cf.get_value("s", "last_bonus_day", "")
 	seen_help = cf.get_value("s", "seen_help", false)
+	country_idx = cf.get_value("s", "country_idx", 0)
+	country_fill = cf.get_value("s", "country_fill", 0.0)
 	if not unlocked.has(0):
 		unlocked.append(0)
