@@ -78,16 +78,29 @@ func _build() -> void:
 
 	if Game.best_pct > 0.0:
 		col.add_child(Ui.label("%s  %.1f%%" % [tr("T_BEST"), Game.best_pct], 24, Ui.INK_SOFT))
-	# Campaign line is a BUTTON — opens the world map country picker.
+	# Campaign card with a PRETTY progress bar toward 100% — tap = world map.
 	var cd: Dictionary = Game.COUNTRIES[Game.country_idx]
 	var cbtn := Button.new()
-	cbtn.text = "%s  %d/%d  ·  %d%%   ▾" % [cd.name, Game.country_idx + 1,
-		Game.COUNTRIES.size(), Game.country_progress()]
-	Ui.style_button(cbtn, Color(1, 1, 1, 0.85), 22, Color(0.72, 0.52, 0.05), 24)
+	cbtn.custom_minimum_size = Vector2(360, 74)
 	cbtn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	Ui.style_button(cbtn, Color(1, 1, 1, 0.9), 20, Color(0.72, 0.52, 0.05), 22)
 	cbtn.pressed.connect(func() -> void:
 		Sfx.play("click")
 		_open_countries())
+	var cv := VBoxContainer.new()
+	cv.set_anchors_preset(Control.PRESET_FULL_RECT)
+	cv.offset_left = 18
+	cv.offset_right = -18
+	cv.offset_top = 8
+	cv.offset_bottom = -8
+	cv.add_theme_constant_override("separation", 4)
+	cv.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cbtn.add_child(cv)
+	var head := Ui.label("%s  %d/%d   ▾" % [cd.name, Game.country_idx + 1,
+		Game.COUNTRIES.size()], 20, Color(0.60, 0.44, 0.05))
+	head.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cv.add_child(head)
+	cv.add_child(_progress_bar(Game.country_progress_f(), Ui.ACCENT, 300))
 	col.add_child(cbtn)
 
 	# Mission ladder at a glance — always a reason for one more round.
@@ -215,13 +228,55 @@ func _overlay_base(min_w: float) -> VBoxContainer:
 	panel.add_child(v)
 	return v
 
-## World-map campaign picker: every country with its real silhouette,
-## progress and lock state. Conquered maps can be replayed any time.
+## A slim rounded progress bar (fraction 0..1) — the original's satisfying fill.
+func _progress_bar(frac: float, color: Color, width: float) -> Control:
+	var track := Panel.new()
+	track.custom_minimum_size = Vector2(width, 14)
+	var tsb := StyleBoxFlat.new()
+	tsb.bg_color = Color(0, 0, 0, 0.10)
+	tsb.set_corner_radius_all(7)
+	track.add_theme_stylebox_override("panel", tsb)
+	track.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var fill := Panel.new()
+	fill.custom_minimum_size = Vector2(maxf(width * clampf(frac, 0.0, 1.0), 4.0), 14)
+	var fsb := StyleBoxFlat.new()
+	fsb.bg_color = color
+	fsb.set_corner_radius_all(7)
+	fill.add_theme_stylebox_override("panel", fsb)
+	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	track.add_child(fill)
+	return track
+
+## World-map campaign picker — FULL-SCREEN scrollable, every country with its
+## real silhouette, a progress bar, and the hero milestones you're chasing.
 func _open_countries() -> void:
-	var v := _overlay_base(560)
+	_close_overlay()
+	_overlay = Control.new()
+	_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(_overlay)
+	var dim := Ui.dim()
+	_overlay.add_child(dim)
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", Ui.card(Ui.PAPER, 24))
+	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	panel.offset_left = 18
+	panel.offset_right = -18
+	panel.offset_top = 24
+	panel.offset_bottom = -24
+	_overlay.add_child(panel)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 10)
+	panel.add_child(v)
 	v.add_child(Ui.label(tr("T_MAP"), 34, Ui.INK))
+	# Motivation line: what unlocking the next country needs + hero milestones.
+	var goal_note := tr("T_MAP_HINT")
+	if Game.country_max < Game.COUNTRIES.size() - 1:
+		goal_note += "  ·  " + (tr("T_MAP_NEXT") % str(Game.COUNTRIES[Game.country_max + 1].name))
+	var gl := Ui.label(goal_note, 16, Ui.INK_SOFT)
+	gl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	v.add_child(gl)
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(0, 760)
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	v.add_child(scroll)
 	var list := VBoxContainer.new()
@@ -229,12 +284,18 @@ func _open_countries() -> void:
 	list.add_theme_constant_override("separation", 8)
 	scroll.add_child(list)
 	var shapes: Dictionary = preload("res://scripts/Arena.gd").COUNTRY_SHAPES
+	# Hero-milestone lookup: how many conquered countries unlocks each hero.
+	var hero_at := {}
+	for hi in Game.SKINS.size():
+		var req: int = int(Game.SKINS[hi].get("req", 0))
+		if req > 0:
+			hero_at[req - 1] = str(Game.SKINS[hi].name)
 	for i in Game.COUNTRIES.size():
 		var idx := i
 		var cdd: Dictionary = Game.COUNTRIES[i]
 		var unlocked := i <= Game.country_max
 		var b := Button.new()
-		var sb := Ui.card(Color(1, 1, 1, 0.95) if unlocked else Color(0.88, 0.89, 0.92), 18)
+		var sb := Ui.card(Color(1, 1, 1, 0.95) if unlocked else Color(0.88, 0.89, 0.92), 16)
 		if i == Game.country_idx:
 			sb.set_border_width_all(4)
 			sb.border_color = Ui.ACCENT
@@ -242,7 +303,7 @@ func _open_countries() -> void:
 		b.add_theme_stylebox_override("hover", sb)
 		b.add_theme_stylebox_override("pressed", sb)
 		b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
-		b.custom_minimum_size = Vector2(500, 92)
+		b.custom_minimum_size = Vector2(480, 94)
 		b.pressed.connect(func() -> void:
 			if idx > Game.country_max:
 				Sfx.play("click", 0.6)
@@ -255,42 +316,42 @@ func _open_countries() -> void:
 		h.set_anchors_preset(Control.PRESET_FULL_RECT)
 		h.offset_left = 14
 		h.offset_right = -14
-		h.add_theme_constant_override("separation", 16)
+		h.offset_top = 10
+		h.offset_bottom = -10
+		h.add_theme_constant_override("separation", 14)
 		h.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		b.add_child(h)
 		var thumb := CountryThumb.new()
-		thumb.custom_minimum_size = Vector2(64, 64)
+		thumb.custom_minimum_size = Vector2(60, 60)
 		thumb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		thumb.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		if shapes.has(cdd.name):
 			for pnt in shapes[cdd.name]:
 				thumb.poly.append(pnt)
-		thumb.col = Ui.ACCENT if unlocked else Color(0.55, 0.58, 0.65)
+		thumb.col = Ui.ACCENT if unlocked else Color(0.60, 0.63, 0.70)
 		h.add_child(thumb)
 		var tv := VBoxContainer.new()
 		tv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tv.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		tv.add_theme_constant_override("separation", 4)
 		tv.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		h.add_child(tv)
-		var nm := Ui.label("%d · %s" % [i + 1, str(cdd.name)], 24,
-			Ui.INK if unlocked else Ui.INK_SOFT)
+		var title := "%d · %s" % [i + 1, str(cdd.name)]
+		if hero_at.has(i):
+			title += "   ★ %s" % str(hero_at[i])   # hero milestone marker
+		var nm := Ui.label(title, 22, Ui.INK if unlocked else Ui.INK_SOFT)
 		nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		nm.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		tv.add_child(nm)
-		var status := ""
-		var scol := Ui.INK_SOFT
 		if not unlocked:
-			status = tr("T_LOCKED")
-		elif i < Game.country_max:
-			status = "100%  ★"
-			scol = Color(0.72, 0.52, 0.05)
+			var lk := Ui.label("🔒 " + tr("T_LOCKED"), 17, Ui.INK_SOFT)
+			lk.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+			lk.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			tv.add_child(lk)
 		else:
-			status = "%d%%" % Game.country_progress()
-			scol = Ui.ACCENT
-		var st := Ui.label(status, 19, scol)
-		st.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		st.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		tv.add_child(st)
+			var frac := 1.0 if i < Game.country_max else Game.country_progress_f()
+			var col: Color = Color(0.72, 0.52, 0.05) if i < Game.country_max else Ui.ACCENT
+			tv.add_child(_progress_bar(frac, col, 300))
 		list.add_child(b)
 	var ok := Button.new()
 	ok.text = tr("T_OK")

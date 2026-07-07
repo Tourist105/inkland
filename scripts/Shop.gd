@@ -111,6 +111,7 @@ func _make_card(i: int) -> Button:
 	price_row.add_theme_constant_override("separation", 6)
 	price_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var pc := CoinIcon.make(20)
+	pc.name = "CoinIcon"
 	pc.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	pc.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	price_row.add_child(pc)
@@ -144,12 +145,20 @@ func _refresh() -> void:
 		var row: HBoxContainer = b.get_node("V/PriceRow")
 		row.visible = not owned
 		if not owned:
-			(row.get_node("Price") as Label).text = str(s.price)
+			# Special heroes show the country milestone, not a coin price.
+			var req: int = int(s.get("req", 0))
+			(row.get_node("CoinIcon") as Control).visible = req == 0
+			(row.get_node("Price") as Label).text = \
+				(tr("T_HERO_AT") % req) if req > 0 else str(s.price)
 
 func _tap(i: int) -> void:
 	if Game.is_unlocked(i):
 		Game.select_skin(i)
 		Sfx.play("click")
+	elif int(Game.SKINS[i].get("req", 0)) > 0:
+		# Special hero — earned by conquering, not bought.
+		Sfx.play("click", 0.6)
+		_show_toast(tr("T_HERO_LOCKED") % int(Game.SKINS[i].req))
 	else:
 		var price: int = Game.SKINS[i].price
 		if Game.try_spend(price):

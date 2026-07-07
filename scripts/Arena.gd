@@ -74,6 +74,10 @@ var _blitz_t := 60.0               # 1-minute quick mode countdown
 var _blitz_label: Label
 var _streak := 0                   # chained-kill announcement window
 var _streak_t := 0.0
+var _human_speed_mult := 1.0       # special-hero ability edges
+var _human_turn_mult := 1.0
+var _human_start_bonus := 0
+var _blitz_color := 0              # rotating respawn palette cursor
 
 # Juice: fading white flash on freshly captured cells, floating texts, rings.
 var _flash := {}                   # cell index -> remaining seconds
@@ -264,11 +268,17 @@ func _spawn_players() -> void:
 	me.id = 1
 	me.color = skin.color
 	me.face = skin.face
+	me.pattern = int(skin.get("pattern", 0))
 	me.is_human = true
 	me.display_name = tr("T_YOU")
 	me.home = _any_land_spot()
 	players.append(me)
 	human = me
+	# Special-hero ability edges (speed / turn / start size).
+	var ab: Dictionary = Game.skin_ability()
+	_human_speed_mult = float(ab.get("speed", 1.0))
+	_human_turn_mult = float(ab.get("turn", 1.0))
+	_human_start_bonus = int(ab.get("start", 0))
 
 	var colors := _bot_palette(skin.color)
 	var names := BOT_NAMES.duplicate()
@@ -311,6 +321,11 @@ func _respawn(p: InkPlayer) -> void:
 			p.respawn_in = RESPAWN
 			return
 		p.home = spot
+		if Game.blitz:
+			# Blitz: rivals return as a FRESH ink colour, like a new player.
+			_blitz_color = (_blitz_color + 1) % BOT_COLORS.size()
+			p.color = BOT_COLORS[_blitz_color]
+			_dirty_owners[p.id] = true
 	p.alive = true
 	p.cx = p.home.x
 	p.cy = p.home.y
@@ -327,10 +342,12 @@ func _respawn(p: InkPlayer) -> void:
 	p.ribbon.clear()
 	p.ribbon_stale = false
 	var rad := START_RADIUS
-	if p.is_human and Game.start_boost:
-		rad = 10                       # rewarded "start big" (~5x area)
-		Game.start_boost = false
-		Game.save_state()
+	if p.is_human:
+		rad += _human_start_bonus      # Titan / Champion hero perk
+		if Game.start_boost:
+			rad = 10                    # rewarded "start big" (~5x area)
+			Game.start_boost = false
+			Game.save_state()
 	# Round starting blob (like the original), clipped to land.
 	var rr := rad * rad + rad
 	for y in range(p.home.y - rad, p.home.y + rad + 1):
@@ -455,9 +472,10 @@ func _move_actors(dt: float) -> void:
 			target = Vector2(p.pending_dir).angle()
 		var old_pos := p.pos
 		var diff := angle_difference(p.heading, target)
-		var rate := (TURN_RATE if p.is_human else BOT_TURN) * dt
+		var rate := (TURN_RATE * _human_turn_mult if p.is_human else BOT_TURN) * dt
 		p.heading += clampf(diff, -rate, rate)
-		p.pos += Vector2.from_angle(p.heading) * SPEED * dt
+		var spd := SPEED * (_human_speed_mult if p.is_human else 1.0)
+		p.pos += Vector2.from_angle(p.heading) * spd * dt
 		p.dir = _cardinal(p.heading)          # bots' brain works in cardinals
 
 		# The coast is a smooth WALL (never death): glide along it, keeping the
@@ -596,7 +614,7 @@ func _kill(p: InkPlayer, killer: InkPlayer, cause: String) -> void:
 		_human_died(cause, killer)      # land stays put (revive keeps it)
 		return
 	p.alive = false
-	p.respawn_in = RESPAWN
+	p.respawn_in = 5.0 if Game.blitz else RESPAWN   # blitz: 5s re-entry
 	# Original rule: the victim's WHOLE empire falls to the killer.
 	var heir := 0
 	if killer != null and killer.alive and killer != p:
@@ -1121,6 +1139,11 @@ func _show_results(subtitle: String, won: bool) -> void:
 			var cbonus := Game.conquer_country()
 			cline = (tr("T_CONQUERED") % prev_country) + "  +%d
 → %s" % [cbonus, Game.COUNTRIES[Game.country_idx].name]
+			# A milestone hero may have just unlocked — announce and record it.
+			for hi in Game.newly_earned_heroes():
+				cline += "
+" + (tr("T_HERO_NEW") % str(Game.SKINS[hi].name))
+				Game.unlock_skin(hi)
 		else:
 			cline = "%s  ·  %d%%" % [prev_country, Game.country_progress()]
 		(v.get_node("Retry") as Button).text = \
@@ -1937,7 +1960,7 @@ func _draw() -> void:
 			glow.a = 0.30
 			draw_circle(c, HEAD_R * 1.55, glow)
 			SkinArt.draw_blob(self, c, HEAD_R, p.color, p.face,
-				Vector2.from_angle(p.heading))
+				Vector2.from_angle(p.heading), true, p.pattern)
 			if p.id == king:
 				var b := c + Vector2(0, -HEAD_R - 9.0)
 				draw_colored_polygon(PackedVector2Array([

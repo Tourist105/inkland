@@ -25,4 +25,4 @@ func _draw() -> void:
 	if bob:
 		c.y += sin(_t * 2.2) * r * 0.08
 		r *= 1.0 + sin(_t * 4.4) * 0.015
-	SkinArt.draw_blob(self, c, r, s.color, s.face, Vector2.UP)
+	SkinArt.draw_blob(self, c, r, s.color, s.face, Vector2.UP, true, int(s.get("pattern", 0)))

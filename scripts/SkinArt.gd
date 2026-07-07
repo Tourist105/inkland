@@ -5,12 +5,39 @@ class_name SkinArt
 
 ## face ids: 0 classic, 1 happy, 2 wink, 3 heart, 4 angry, 5 sleepy, 6 shades, 7 star
 static func draw_blob(ci: CanvasItem, c: Vector2, r: float, col: Color, face: int,
-		dir: Vector2 = Vector2.UP, with_shadow := true) -> void:
+		dir: Vector2 = Vector2.UP, with_shadow := true, pattern := 0) -> void:
 	if with_shadow:
 		ci.draw_circle(c + Vector2(0, r * 0.16), r, Color(0, 0, 0, 0.16))
 	ci.draw_circle(c, r, col)
+	if pattern > 0:
+		draw_pattern(ci, c, r, pattern, col)
 	ci.draw_circle(c, r, col.lightened(0.35), false, maxf(r * 0.07, 1.5))
 	draw_face(ci, c, r, face, dir)
+
+## Ink PATTERN inside the blob — special heroes read as more than a colour.
+## 1 stripes · 2 dots · 3 rings · 4 bolt. Kept within ~0.9r (no clipping).
+static func draw_pattern(ci: CanvasItem, c: Vector2, r: float, pattern: int, col: Color) -> void:
+	var ink := col.darkened(0.28)
+	match pattern:
+		1:   # diagonal stripes (chords, shortened to stay inside the disc)
+			for k in range(-2, 3):
+				var off := k * r * 0.42
+				var d := sqrt(maxf(0.0, r * r - off * off)) * 0.92
+				var n := Vector2(0.7071, -0.7071)
+				var t := Vector2(0.7071, 0.7071)
+				ci.draw_line(c + n * off - t * d, c + n * off + t * d, ink, maxf(r * 0.13, 2.0))
+		2:   # polka dots
+			for p in [Vector2(-0.42, -0.3), Vector2(0.42, -0.3), Vector2(0.0, 0.12),
+					Vector2(-0.42, 0.5), Vector2(0.42, 0.5)]:
+				ci.draw_circle(c + p * r, r * 0.15, ink)
+		3:   # concentric rings
+			ci.draw_arc(c, r * 0.66, 0, TAU, 28, ink, maxf(r * 0.10, 1.5))
+			ci.draw_arc(c, r * 0.38, 0, TAU, 20, ink, maxf(r * 0.10, 1.5))
+		4:   # lightning bolt
+			ci.draw_colored_polygon(PackedVector2Array([
+				c + Vector2(0.10, -0.62) * r, c + Vector2(-0.34, 0.06) * r,
+				c + Vector2(-0.02, 0.06) * r, c + Vector2(-0.10, 0.62) * r,
+				c + Vector2(0.34, -0.06) * r, c + Vector2(0.02, -0.06) * r]), ink)
 
 static func draw_face(ci: CanvasItem, c: Vector2, r: float, face: int, dir: Vector2) -> void:
 	var look := dir.normalized() if dir.length() > 0.01 else Vector2.UP

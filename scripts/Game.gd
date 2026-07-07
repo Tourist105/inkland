@@ -31,7 +31,25 @@ const SKINS := [
 	{"name": "Magma",  "price": 3800, "color": Color(0.55, 0.10, 0.12), "face": 6},
 	{"name": "Pearl",  "price": 4600, "color": Color(0.97, 0.95, 0.90), "face": 1},
 	{"name": "Onyx",   "price": 6000, "color": Color(0.06, 0.06, 0.10), "face": 6},
+	# SPECIAL HEROES — earned by conquering countries, not gold. Each has an
+	# ink PATTERN (not just a colour) and a gameplay ABILITY.
+	# pattern: 1 stripes, 2 dots, 3 rings, 4 bolt.  ability: swift/titan/champion.
+	{"name": "Comet",   "price": -1, "req": 3,  "color": Color(0.20, 0.80, 0.95), "face": 7,
+		"pattern": 1, "ability": "swift"},
+	{"name": "Boulder", "price": -1, "req": 6,  "color": Color(0.50, 0.42, 0.36), "face": 4,
+		"pattern": 2, "ability": "titan"},
+	{"name": "Nova",    "price": -1, "req": 10, "color": Color(0.80, 0.35, 0.95), "face": 3,
+		"pattern": 3, "ability": "swift"},
+	{"name": "Champion","price": -1, "req": 16, "color": Color(0.98, 0.78, 0.14), "face": 7,
+		"pattern": 4, "ability": "champion"},
 ]
+
+## Ability tuning — the human's edge for earning a special hero.
+const ABILITIES := {
+	"swift":    {"speed": 1.10, "turn": 1.18, "start": 0},
+	"titan":    {"speed": 1.00, "turn": 1.00, "start": 4},
+	"champion": {"speed": 1.15, "turn": 1.22, "start": 3},
+}
 
 ## Locales shipped in assets/translations/strings.csv. v1 = scripts Godot's
 ## bundled font renders cleanly; CJK/Arabic/Thai/Devanagari need bundled font
@@ -94,23 +112,28 @@ func claim_daily() -> int:
 	return 50
 
 
-## Campaign meta, original-style: every run BANKS its % into the country
-## (dying never resets progress); the bank target is COUNTRIES[i].size.
-## Only the FRONTIER country banks — replays of conquered maps are for fun.
-## Returns true when the bank just hit the target (country conquered).
+## Campaign meta, original-style: to unlock the next country you must reach
+## 100% total — in ONE game, or summed across several. Every run banks its
+## best % into the frontier country. Returns true when the bank hits 100.
+const COUNTRY_TARGET := 100.0
+
 func record_country_pct(pct: float) -> bool:
 	if country_idx != country_max:
-		return false
+		return false                # replays of cleared maps don't bank
 	country_fill += pct
 	save_state()
-	return country_fill >= float(COUNTRIES[country_idx].size)
+	return country_fill >= COUNTRY_TARGET
 
-## Banked progress normalized to a clean 0-100% for all displays.
+## Banked progress as a clean 0-100% for the progress bars.
 func country_progress() -> int:
 	if country_idx < country_max:
 		return 100
-	return int(clampf(country_fill * 100.0 / float(COUNTRIES[country_idx].size),
-		0.0, 100.0))
+	return int(clampf(country_fill, 0.0, 100.0))
+
+func country_progress_f() -> float:
+	if country_idx < country_max:
+		return 1.0
+	return clampf(country_fill / COUNTRY_TARGET, 0.0, 1.0)
 
 ## Country conquered (bank full OR a single-run win): bonus, advance.
 ## Re-winning an already-conquered map pays a smaller purse.
@@ -146,7 +169,19 @@ func try_spend(n: int) -> bool:
 # -------------------------------------------------------------------- skins --
 
 func is_unlocked(i: int) -> bool:
+	# Special heroes unlock by CONQUERING countries, not by gold.
+	var req: int = int(SKINS[i].get("req", 0))
+	if req > 0:
+		return country_max + 1 >= req or unlocked.has(i)
 	return unlocked.has(i)
+
+## Milestone specials newly earned this session (for a "hero unlocked!" toast).
+func newly_earned_heroes() -> Array:
+	var out: Array = []
+	for i in SKINS.size():
+		if int(SKINS[i].get("req", 0)) > 0 and is_unlocked(i) and not unlocked.has(i):
+			out.append(i)
+	return out
 
 func unlock_skin(i: int) -> void:
 	if not unlocked.has(i):
@@ -159,6 +194,11 @@ func select_skin(i: int) -> void:
 
 func skin() -> Dictionary:
 	return SKINS[clampi(selected_skin, 0, SKINS.size() - 1)]
+
+## Ability record for the current skin (empty if plain).
+func skin_ability() -> Dictionary:
+	var ab: String = str(skin().get("ability", ""))
+	return ABILITIES.get(ab, {})
 
 # ----------------------------------------------------------------- missions --
 ## Endless mission ladder — a fresh goal after every round.

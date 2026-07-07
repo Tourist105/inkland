@@ -6,6 +6,7 @@ extends RefCounted
 var id: int
 var color: Color
 var face: int = 0
+var pattern: int = 0          # special-hero ink pattern (0 = plain)
 var display_name: String = ""
 var is_human: bool = false
 
