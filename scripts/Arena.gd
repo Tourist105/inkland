@@ -475,6 +475,24 @@ func _move_actors(dt: float) -> void:
 					best = cy2
 					best_d = absf(cy2.y - old_pos.y)
 			p.pos = best
+		# The RENDERED coast is the smooth polygon — never drive visibly past
+		# it (the cell mask alone lets the head poke out into the water).
+		if _land_clip.size() >= 3 \
+				and not Geometry2D.is_point_in_polygon(p.pos, _land_clip):
+			var bp := old_pos
+			var bd := 0.0
+			for f2: float in [1.0, 0.66, 0.33]:
+				var d1 := Vector2(old_pos.x + (p.pos.x - old_pos.x) * f2, old_pos.y)
+				var d2 := Vector2(old_pos.x, old_pos.y + (p.pos.y - old_pos.y) * f2)
+				if absf(d1.x - old_pos.x) > bd \
+						and Geometry2D.is_point_in_polygon(d1, _land_clip):
+					bp = d1
+					bd = absf(d1.x - old_pos.x)
+				if absf(d2.y - old_pos.y) > bd \
+						and Geometry2D.is_point_in_polygon(d2, _land_clip):
+					bp = d2
+					bd = absf(d2.y - old_pos.y)
+			p.pos = bp
 		# Cell-entry events (one axis at a time — no corner skipping).
 		var nx := int(p.pos.x / CELL)
 		var ny := int(p.pos.y / CELL)
