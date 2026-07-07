@@ -18,7 +18,7 @@ const InkPlayer = preload("res://scripts/Player.gd")
 const W := 112
 const H := 192
 const CELL := 10.0
-const TRAIL_W := 12.0        # fixed px so finer grid keeps chunky trails
+const TRAIL_W := 20.0        # chunky ribbon, roughly head-wide like the genre
 const HEAD_R := 12.0
 const TICK := 0.10          # bot-brain cadence (movement itself is continuous)
 const SPEED := 200.0        # px/s — one cell per TICK, like the grid era
@@ -41,12 +41,6 @@ const BOT_COLORS := [
 	Color(0.95, 0.40, 0.75),   # magenta
 	Color(0.62, 0.85, 0.25),   # lime
 ]
-
-# Background & grid tones for a clean modern look.
-const BG_TOP := Color(0.96, 0.97, 0.99)
-const BG_BOT := Color(0.90, 0.93, 0.97)
-const GRID_LINE := Color(0.0, 0.0, 0.0, 0.045)
-const VOID := Color(0.78, 0.81, 0.86)   # outside-the-board frame
 
 enum State { COUNTDOWN, PLAYING, PAUSED, OVER }
 
@@ -85,16 +79,18 @@ var _lb_dots: Array[Panel] = []
 var _lb_labels: Array[Label] = []
 var _minimap: MiniMap
 var _info_acc := 0.0
-var _mask_a: Image          # R=land G=p1 B=p2 A=p3
-var _mask_b: Image          # R=p4 G=p5 B=p6
-var _tex_a: ImageTexture
-var _tex_b: ImageTexture
-var _spr_a: Sprite2D
-var _spr_b: Sprite2D
+var _land_loops: Array = []        # smoothed country outline: {pts, spts, hole}
+var _terr_loops: Array = []        # per player: Array of {pts, spts, hole}
+var _dirty_owners := {}            # player ids whose outline needs a retrace
+var _paper := Color(0.955, 0.985, 0.965)
+var _country_poly := PackedVector2Array()   # normalized source silhouette
 var _land := PackedByteArray()     # 1 = playable land (country silhouette)
 var _land_total := 1
 
-const WATER := Color(0.47, 0.58, 0.72)
+const WATER := Color(0.76, 0.87, 0.90)   # pale lagoon, keeps the board light
+const EXTRUDE := 7.0        # jelly side height (px) under every colour slab
+const ROUND_CUT := 0.45     # corner rounding: fraction of the shorter edge
+const ROUND_MAX := 26.0     # px cap so long edges keep ruler-straight runs
 
 ## Rough, recognisable country silhouettes (normalized 0..1, y down = south).
 ## Countries without a shape get a seeded island blob.
@@ -136,11 +132,6 @@ func _ready() -> void:
 	trail_owner = PackedByteArray()
 	trail_owner.resize(W * H)
 	_counts.resize(BOT_COUNT + 2)
-	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-	_mask_a = Image.create(W, H, false, Image.FORMAT_RGBA8)
-	_mask_b = Image.create(W, H, false, Image.FORMAT_RGBA8)
-	_tex_a = ImageTexture.create_from_image(_mask_a)
-	_tex_b = ImageTexture.create_from_image(_mask_b)
 	_build_land_mask()
 	_spawn_players()
 	_build_territory_layers()
@@ -242,6 +233,7 @@ func _respawn(p: InkPlayer) -> void:
 		for x in range(p.home.x - rad, p.home.x + rad + 1):
 			if in_bounds(x, y):
 				grid[idx(x, y)] = p.id
+	_dirty_owners[p.id] = true
 
 func _any_land_spot() -> Vector2i:
 	var spot := _find_free_spot()
@@ -441,6 +433,7 @@ func _kill(p: InkPlayer, killer: InkPlayer, cause: String) -> void:
 	for i in grid.size():               # bot land goes neutral, up for grabs
 		if grid[i] == p.id:
 			grid[i] = 0
+	_dirty_owners[p.id] = true
 	_add_ring_fx(_cell_center(p.cx, p.cy), p.color)
 	if _on_screen(_cell_center(p.cx, p.cy)):
 		_shake = maxf(_shake, 5.0)
@@ -451,9 +444,13 @@ func _commit(p: InkPlayer) -> void:
 	# 1. The trail itself becomes owned land.
 	for c in p.trail:
 		var i := idx(c.x, c.y)
+		var prev := grid[i]
+		if prev != 0 and prev != p.id:
+			_dirty_owners[prev] = true      # stolen from — retrace them too
 		grid[i] = p.id
 		trail_owner[i] = 0
 	p.trail.clear()
+	_dirty_owners[p.id] = true
 
 	# 2. Flood the "outside" from the border through every non-owned cell.
 	#    Whatever the flood can't reach is enclosed -> it becomes ours.
@@ -490,6 +487,8 @@ func _commit(p: InkPlayer) -> void:
 	var gained := 0
 	for i in range(W * H):
 		if visited[i] == 0 and grid[i] != p.id:
+			if grid[i] != 0:
+				_dirty_owners[grid[i]] = true
 			grid[i] = p.id
 			gained += 1
 	if gained > 0:
@@ -1196,111 +1195,180 @@ func _build_results_panel() -> PanelContainer:
 
 # ------------------------------------------------------------------- render --
 
-## Rebuild the smooth territory texture from the grid (linear-filtered when
-## drawn, so region edges read as smooth curves, not stepped tiles).
+## Retrace the vector outlines of every territory whose cells changed.
 func _refresh_territory() -> void:
-	for y in H:
-		for x in W:
-			var i3 := idx(x, y)
-			var o := int(grid[i3])
-			var la := 1.0 if _land[i3] == 1 else 0.0
-			_mask_a.set_pixel(x, y, Color(la,
-				1.0 if o == 1 else 0.0, 1.0 if o == 2 else 0.0, 1.0 if o == 3 else 0.0))
-			_mask_b.set_pixel(x, y, Color(1.0 if o == 4 else 0.0,
-				1.0 if o == 5 else 0.0, 1.0 if o == 6 else 0.0, 0.0))
-	_tex_a.update(_mask_a)
-	_tex_b.update(_mask_b)
+	_retrace_territories()
 
 
-## Smoothstep-sharpened bilinear masks = mathematically smooth region edges
-## (the real paper.io look — no stairs, no blur).
-const TERR_SHADER_A := """
-shader_type canvas_item;
-uniform vec4 water : source_color;
-uniform vec4 paper : source_color;
-uniform vec4 p1 : source_color;
-uniform vec4 p2 : source_color;
-uniform vec4 p3 : source_color;
-const float AA = 0.24;
-vec4 blur9(sampler2D tex, vec2 uv, vec2 px) {
-	vec4 m = texture(tex, uv) * 0.25;
-	m += (texture(tex, uv + vec2(px.x, 0.0)) + texture(tex, uv - vec2(px.x, 0.0))
-		+ texture(tex, uv + vec2(0.0, px.y)) + texture(tex, uv - vec2(0.0, px.y))) * 0.125;
-	m += (texture(tex, uv + px) + texture(tex, uv - px)
-		+ texture(tex, uv + vec2(px.x, -px.y)) + texture(tex, uv - vec2(px.x, -px.y))) * 0.0625;
-	return m;
-}
-void fragment() {
-	vec4 m = blur9(TEXTURE, UV, TEXTURE_PIXEL_SIZE);
-	vec3 c = water.rgb;
-	c = mix(c, paper.rgb, smoothstep(0.5 - AA, 0.5 + AA, m.r));
-	c = mix(c, p1.rgb, smoothstep(0.5 - AA, 0.5 + AA, m.g));
-	c = mix(c, p2.rgb, smoothstep(0.5 - AA, 0.5 + AA, m.b));
-	c = mix(c, p3.rgb, smoothstep(0.5 - AA, 0.5 + AA, m.a));
-	COLOR = vec4(c, 1.0);
-}
-"""
-const TERR_SHADER_B := """
-shader_type canvas_item;
-uniform vec4 p4 : source_color;
-uniform vec4 p5 : source_color;
-uniform vec4 p6 : source_color;
-const float AA = 0.24;
-vec4 blur9(sampler2D tex, vec2 uv, vec2 px) {
-	vec4 m = texture(tex, uv) * 0.25;
-	m += (texture(tex, uv + vec2(px.x, 0.0)) + texture(tex, uv - vec2(px.x, 0.0))
-		+ texture(tex, uv + vec2(0.0, px.y)) + texture(tex, uv - vec2(0.0, px.y))) * 0.125;
-	m += (texture(tex, uv + px) + texture(tex, uv - px)
-		+ texture(tex, uv + vec2(px.x, -px.y)) + texture(tex, uv - vec2(px.x, -px.y))) * 0.0625;
-	return m;
-}
-void fragment() {
-	vec4 m = blur9(TEXTURE, UV, TEXTURE_PIXEL_SIZE);
-	vec4 o = vec4(0.0);
-	float a;
-	a = smoothstep(0.5 - AA, 0.5 + AA, m.r); o = mix(o, vec4(p4.rgb, 1.0), a);
-	a = smoothstep(0.5 - AA, 0.5 + AA, m.g); o = mix(o, vec4(p5.rgb, 1.0), a);
-	a = smoothstep(0.5 - AA, 0.5 + AA, m.b); o = mix(o, vec4(p6.rgb, 1.0), a);
-	COLOR = o;
-}
-"""
-
-func _make_terr_sprite(tex: ImageTexture, code: String) -> Sprite2D:
-	var sp := Sprite2D.new()
-	sp.texture = tex
-	sp.centered = false
-	sp.position = Vector2(-CELL * 0.5, -CELL * 0.5)
-	sp.scale = Vector2(CELL, CELL)
-	sp.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-	sp.z_index = -1
-	var sh := Shader.new()
-	sh.code = code
-	var mat := ShaderMaterial.new()
-	mat.shader = sh
-	sp.material = mat
-	add_child(sp)
-	return sp
+## --- Vector territory rendering (the real paper.io-2 look) ------------------
+## Region borders are traced from the grid as closed polygons, collinear runs
+## are merged (straight stays straight), corners get generous rounded cuts and
+## a Chaikin pass silkens the result. _draw fills each loop as a jelly slab:
+## dark extruded side below, bright colour on top. No textures, no blur —
+## mathematically smooth curves at any zoom.
 
 func _build_territory_layers() -> void:
-	# Water backdrop behind everything.
+	# Flat pale water backdrop behind everything — clean, never busy.
 	var bg := ColorRect.new()
 	bg.color = WATER
 	bg.position = Vector2(-CELL * 20, -CELL * 20)
 	bg.size = Vector2((W + 40) * CELL, (H + 40) * CELL)
 	bg.z_index = -2
 	add_child(bg)
-	_spr_a = _make_terr_sprite(_tex_a, TERR_SHADER_A)
-	_spr_b = _make_terr_sprite(_tex_b, TERR_SHADER_B)
 	var bt := Game.country_tint()
-	var paper := Color(BG_TOP.r * bt.r, BG_TOP.g * bt.g, BG_TOP.b * bt.b)
-	var ma: ShaderMaterial = _spr_a.material
-	ma.set_shader_parameter("water", WATER)
-	ma.set_shader_parameter("paper", paper)
-	for k in 3:
-		ma.set_shader_parameter("p%d" % (k + 1), players[k].color)
-	var mb: ShaderMaterial = _spr_b.material
-	for k in 3:
-		mb.set_shader_parameter("p%d" % (k + 4), players[k + 3].color)
+	_paper = Color(0.955 * bt.r, 0.985 * bt.g, 0.965 * bt.b)
+	_terr_loops.clear()
+	for k in players.size():
+		_terr_loops.append([])
+	_retrace_land()
+	for p in players:
+		_dirty_owners[p.id] = true
+
+## The coast is rendered from the SOURCE silhouette polygon, not from the
+## rasterized cell mask — that keeps it silky at any zoom. The mask is only
+## used for gameplay, so territory may overhang the drawn water by up to a
+## cell: reads as the jelly slab bleeding over the edge, which is the look.
+func _retrace_land() -> void:
+	var mrg := 0.05
+	var board := Vector2(W * CELL, H * CELL)
+	var pts := PackedVector2Array()
+	for p in _country_poly:
+		pts.append((p - Vector2(mrg, mrg)) / (1.0 - 2.0 * mrg) * board)
+	var n := pts.size()
+	var rounded := PackedVector2Array()
+	for i in n:
+		var pv := pts[(i + n - 1) % n]
+		var v := pts[i]
+		var nx := pts[(i + 1) % n]
+		var cut := minf(v.distance_to(pv), v.distance_to(nx)) * 0.28
+		rounded.append(v + (pv - v).normalized() * cut)
+		rounded.append(v + (nx - v).normalized() * cut)
+	var smooth := _chaikin_closed(_chaikin_closed(rounded))
+	var spts := PackedVector2Array()
+	for q in smooth:
+		spts.append(q + Vector2(0, EXTRUDE + 4.0))
+	_land_loops = [{"pts": smooth, "spts": spts, "hole": false}]
+
+## One grid pass collects boundary edges for every dirty owner at once.
+func _retrace_territories() -> void:
+	if _dirty_owners.is_empty():
+		return
+	var stride := W + 1
+	var segs := {}
+	for oid in _dirty_owners.keys():
+		segs[oid] = {}
+	for y in H:
+		var row := y * W
+		for x in W:
+			var o := grid[row + x]
+			if o == 0 or not segs.has(o):
+				continue
+			var d: Dictionary = segs[o]
+			var tl := y * stride + x
+			if y == 0 or grid[row + x - W] != o:
+				_seg_add(d, tl, tl + 1)
+			if x == W - 1 or grid[row + x + 1] != o:
+				_seg_add(d, tl + 1, tl + stride + 1)
+			if y == H - 1 or grid[row + x + W] != o:
+				_seg_add(d, tl + stride + 1, tl + stride)
+			if x == 0 or grid[row + x - 1] != o:
+				_seg_add(d, tl + stride, tl)
+	for oid in segs.keys():
+		_terr_loops[oid - 1] = _chain_loops(segs[oid])
+	_dirty_owners.clear()
+
+static func _seg_add(d: Dictionary, a: int, b: int) -> void:
+	if d.has(a):
+		d[a].append(b)
+	else:
+		d[a] = [b]
+
+## Chain directed edge segments into closed loops (region is traced clockwise,
+## holes counter-clockwise — the winding tells them apart later).
+func _chain_loops(segs: Dictionary) -> Array:
+	var out := []
+	var stride := W + 1
+	while not segs.is_empty():
+		var start: int = segs.keys()[0]
+		var loop := PackedInt32Array()
+		var cur := start
+		var prev_dir := Vector2.ZERO
+		while true:
+			loop.append(cur)
+			var ends: Array = segs[cur]
+			var nxt: int = ends[0]
+			if ends.size() > 1:
+				# Diagonal-touch corner: take the clockwise turn so blobs that
+				# only meet at a point stay separate loops.
+				var best := -2.0
+				for e in ends:
+					var dv := Vector2(_key_dir(cur, e, stride)).normalized()
+					var s := Vector2(-prev_dir.y, prev_dir.x).dot(dv)
+					if s > best:
+						best = s
+						nxt = e
+				ends.erase(nxt)
+			else:
+				segs.erase(cur)
+			prev_dir = Vector2(_key_dir(cur, nxt, stride)).normalized()
+			cur = nxt
+			if cur == start or not segs.has(cur):
+				break
+		if loop.size() >= 4:
+			out.append(_finish_loop(loop, stride))
+	return out
+
+static func _key_dir(a: int, b: int, stride: int) -> Vector2i:
+	return Vector2i((b % stride) - (a % stride), (b / stride) - (a / stride))
+
+## Corner-key loop -> smooth world-space polygon + its extruded shadow copy.
+func _finish_loop(keys: PackedInt32Array, stride: int) -> Dictionary:
+	var raw := PackedVector2Array()
+	for k in keys:
+		raw.append(Vector2(float(k % stride), float(k / stride)) * CELL)
+	var n := raw.size()
+	# Winding separates solids from holes (tracing orientation is constant).
+	var area := 0.0
+	for i in n:
+		var a := raw[i]
+		var b := raw[(i + 1) % n]
+		area += a.x * b.y - b.x * a.y
+	# Merge collinear runs so long edges stay ruler-straight...
+	var pts := PackedVector2Array()
+	for i in n:
+		var d1 := raw[i] - raw[(i + n - 1) % n]
+		var d2 := raw[(i + 1) % n] - raw[i]
+		if absf(d1.x * d2.y - d1.y * d2.x) > 0.01:
+			pts.append(raw[i])
+	if pts.size() < 3:
+		pts = raw
+	# ...then cut every corner generously and silken it with Chaikin.
+	var m := pts.size()
+	var rounded := PackedVector2Array()
+	for i in m:
+		var pv := pts[(i + m - 1) % m]
+		var v := pts[i]
+		var nx := pts[(i + 1) % m]
+		var cut := minf(minf(v.distance_to(pv), v.distance_to(nx)) * ROUND_CUT, ROUND_MAX)
+		rounded.append(v + (pv - v).normalized() * cut)
+		rounded.append(v + (nx - v).normalized() * cut)
+	var smooth := _chaikin_closed(rounded)
+	if smooth.size() < 700:
+		smooth = _chaikin_closed(smooth)
+	var spts := PackedVector2Array()
+	for q in smooth:
+		spts.append(q + Vector2(0, EXTRUDE))
+	return {"pts": smooth, "spts": spts, "hole": area < 0.0}
+
+static func _chaikin_closed(pts: PackedVector2Array) -> PackedVector2Array:
+	var n := pts.size()
+	var out := PackedVector2Array()
+	for i in n:
+		var a := pts[i]
+		var b := pts[(i + 1) % n]
+		out.append(a.lerp(b, 0.25))
+		out.append(a.lerp(b, 0.75))
+	return out
 
 ## Rasterize the current country's silhouette into the land mask — the arena
 ## IS the country (paper.io-2 style). Unknown countries get a seeded island.
@@ -1317,6 +1385,7 @@ func _build_land_mask() -> void:
 			var ang := TAU * k / 14.0
 			var rad := 0.34 + 0.10 * sin(k * 2.7 + seed_f) + 0.06 * sin(k * 4.3 + seed_f * 2.0)
 			poly.append(Vector2(0.5, 0.5) + Vector2(cos(ang), sin(ang) * 0.9) * rad)
+	_country_poly = poly
 	# Fit with a small margin; grid is portrait so shapes sit centred.
 	var m := 0.05
 	_land_total = 0
@@ -1343,10 +1412,25 @@ func _visible_cells() -> Rect2i:
 	return Rect2i(x0, y0, x1 - x0, y1 - y0)
 
 func _draw() -> void:
-	# Water/paper/territory come from the shader layers (z -1/-2) below.
+	# Country slab: smooth vector coastline, soft drop shadow, flat paper top.
+	for lp in _land_loops:
+		if not lp.hole:
+			draw_colored_polygon(lp.spts, Color(0.14, 0.32, 0.38, 0.18))
+	for lp in _land_loops:
+		draw_colored_polygon(lp.pts, WATER if lp.hole else _paper)
 
-
-
+	# Territories — jelly slabs: dark extruded side below, colour on top.
+	# Big empires first so a small blob inside someone's pocket stays visible.
+	var order: Array = range(players.size())
+	order.sort_custom(func(a, b): return _counts[a + 1] > _counts[b + 1])
+	for k in order:
+		var p := players[k]
+		var loops: Array = _terr_loops[k]
+		for tp in loops:
+			if not tp.hole:
+				draw_colored_polygon(tp.spts, p.color.darkened(0.36))
+		for tp in loops:
+			draw_colored_polygon(tp.pts, _paper if tp.hole else p.color)
 
 
 	# Active trails: one continuous rounded ribbon per player, glued to the
@@ -1354,7 +1438,8 @@ func _draw() -> void:
 	for p in players:
 		if p.trail.is_empty():
 			continue
-		var col: Color = p.color.lightened(0.15)
+		var main_c: Color = p.color.lightened(0.30)
+		var rim_c: Color = p.color.darkened(0.16)
 		var w := TRAIL_W
 		var pts := PackedVector2Array()
 		for c in p.trail:
@@ -1363,21 +1448,31 @@ func _draw() -> void:
 			pts.append(_head_visual(p))
 		pts = _chaikin(_chaikin(pts))     # smooth curve — no stair-steps
 		if pts.size() >= 2:
-			draw_circle(pts[0], w * 0.5, col)
-			draw_circle(pts[pts.size() - 1], w * 0.5, col)
-			draw_polyline(pts, col, w)
+			var lo := PackedVector2Array()
+			for q in pts:
+				lo.append(q + Vector2(0, 5))     # extruded jelly side
+			draw_circle(lo[0], w * 0.5, rim_c)
+			draw_circle(lo[lo.size() - 1], w * 0.5, rim_c)
+			draw_polyline(lo, rim_c, w)
+			draw_circle(pts[0], w * 0.5, main_c)
+			draw_circle(pts[pts.size() - 1], w * 0.5, main_c)
+			draw_polyline(pts, main_c, w)
 		elif pts.size() == 1:
-			draw_circle(pts[0], w * 0.5, col)
+			draw_circle(pts[0], w * 0.5, main_c)
 
 	# Heads — interpolated blobs with faces, then name tags.
 	for p in players:
 		if p.alive:
 			var c := _head_visual(p)
+			draw_circle(c + Vector2(0, 6), HEAD_R * 0.95, Color(0.10, 0.16, 0.22, 0.18))
+			var glow := p.color
+			glow.a = 0.30
+			draw_circle(c, HEAD_R * 1.55, glow)
 			SkinArt.draw_blob(self, c, HEAD_R, p.color, p.face,
 				Vector2.from_angle(p.heading))
 	var font := ThemeDB.fallback_font
 	for p in players:
-		if p.alive:
+		if p.alive and not p.is_human:
 			var c := _head_visual(p) + Vector2(-60, -CELL * 1.15)
 			draw_string_outline(font, c, p.display_name, HORIZONTAL_ALIGNMENT_CENTER,
 				120, 11, 4, Color(1, 1, 1, 0.9))
@@ -1412,35 +1507,3 @@ static func _chaikin(pts: PackedVector2Array) -> PackedVector2Array:
 	out.append(pts[pts.size() - 1])
 	return out
 
-# --- drawing helpers ---------------------------------------------------------
-
-func _draw_vgradient(rect: Rect2, top: Color, bot: Color) -> void:
-	var bands := 24
-	var bh := rect.size.y / bands
-	for b in range(bands):
-		var ct := top.lerp(bot, float(b) / float(bands - 1))
-		draw_rect(Rect2(rect.position.x, rect.position.y + b * bh, rect.size.x, bh + 1.0), ct)
-
-func _owned(x: int, y: int, owner: int) -> bool:
-	return in_bounds(x, y) and grid[idx(x, y)] == owner
-
-## Darker border line along every edge where an owned cell meets a different
-## owner — crisp region outlines on the cheap.
-func _draw_region_outlines(vis: Rect2i) -> void:
-	for y in range(vis.position.y, vis.position.y + vis.size.y + 1):
-		for x in range(vis.position.x, vis.position.x + vis.size.x + 1):
-			var o := grid[idx(x, y)]
-			if o == 0:
-				continue
-			var edge: Color = players[o - 1].color.darkened(0.30)
-			edge.a = 0.9
-			var ox := x * CELL
-			var oy := y * CELL
-			if not _owned(x, y - 1, o):
-				draw_line(Vector2(ox, oy), Vector2(ox + CELL, oy), edge, 1.5)
-			if not _owned(x, y + 1, o):
-				draw_line(Vector2(ox, oy + CELL), Vector2(ox + CELL, oy + CELL), edge, 1.5)
-			if not _owned(x - 1, y, o):
-				draw_line(Vector2(ox, oy), Vector2(ox, oy + CELL), edge, 1.5)
-			if not _owned(x + 1, y, o):
-				draw_line(Vector2(ox + CELL, oy), Vector2(ox + CELL, oy + CELL), edge, 1.5)
