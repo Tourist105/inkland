@@ -78,9 +78,17 @@ func _build() -> void:
 
 	if Game.best_pct > 0.0:
 		col.add_child(Ui.label("%s  %.1f%%" % [tr("T_BEST"), Game.best_pct], 24, Ui.INK_SOFT))
+	# Campaign line is a BUTTON — opens the world map country picker.
 	var cd: Dictionary = Game.COUNTRIES[Game.country_idx]
-	col.add_child(Ui.label("%s  %d/%d  ·  %d%%" % [cd.name, Game.country_idx + 1,
-		Game.COUNTRIES.size(), Game.country_progress()], 22, Color(0.72, 0.52, 0.05)))
+	var cbtn := Button.new()
+	cbtn.text = "%s  %d/%d  ·  %d%%   ▾" % [cd.name, Game.country_idx + 1,
+		Game.COUNTRIES.size(), Game.country_progress()]
+	Ui.style_button(cbtn, Color(1, 1, 1, 0.85), 22, Color(0.72, 0.52, 0.05), 24)
+	cbtn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	cbtn.pressed.connect(func() -> void:
+		Sfx.play("click")
+		_open_countries())
+	col.add_child(cbtn)
 
 	var play := Button.new()
 	play.text = tr("T_PLAY")
@@ -89,9 +97,23 @@ func _build() -> void:
 	play.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	play.pressed.connect(func() -> void:
 		Sfx.play("click")
+		Game.blitz = false
 		Ads.hide_banner()
 		get_tree().change_scene_to_file("res://scenes/Main.tscn"))
 	col.add_child(play)
+
+	# Quick mode: 60 seconds, highest territory wins. Instant fun.
+	var blitz := Button.new()
+	blitz.text = tr("T_BLITZ") + "  ·  1:00"
+	Ui.style_button(blitz, Color(0.98, 0.55, 0.15), 26)
+	blitz.custom_minimum_size = Vector2(360, 70)
+	blitz.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	blitz.pressed.connect(func() -> void:
+		Sfx.play("click")
+		Game.blitz = true
+		Ads.hide_banner()
+		get_tree().change_scene_to_file("res://scenes/Main.tscn"))
+	col.add_child(blitz)
 
 	if Ads.rewarded_ready():
 		var boost := Button.new()
@@ -103,6 +125,7 @@ func _build() -> void:
 			Sfx.play("click")
 			Ads.show_rewarded(func() -> void:
 				Game.start_boost = true
+				Game.blitz = false
 				Game.save_state()
 				Ads.hide_banner()
 				get_tree().change_scene_to_file("res://scenes/Main.tscn")))
@@ -183,6 +206,105 @@ func _overlay_base(min_w: float) -> VBoxContainer:
 	v.add_theme_constant_override("separation", 14)
 	panel.add_child(v)
 	return v
+
+## World-map campaign picker: every country with its real silhouette,
+## progress and lock state. Conquered maps can be replayed any time.
+func _open_countries() -> void:
+	var v := _overlay_base(560)
+	v.add_child(Ui.label(tr("T_MAP"), 34, Ui.INK))
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(0, 760)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	v.add_child(scroll)
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 8)
+	scroll.add_child(list)
+	var shapes: Dictionary = preload("res://scripts/Arena.gd").COUNTRY_SHAPES
+	for i in Game.COUNTRIES.size():
+		var idx := i
+		var cdd: Dictionary = Game.COUNTRIES[i]
+		var unlocked := i <= Game.country_max
+		var b := Button.new()
+		var sb := Ui.card(Color(1, 1, 1, 0.95) if unlocked else Color(0.88, 0.89, 0.92), 18)
+		if i == Game.country_idx:
+			sb.set_border_width_all(4)
+			sb.border_color = Ui.ACCENT
+		b.add_theme_stylebox_override("normal", sb)
+		b.add_theme_stylebox_override("hover", sb)
+		b.add_theme_stylebox_override("pressed", sb)
+		b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+		b.custom_minimum_size = Vector2(500, 92)
+		b.pressed.connect(func() -> void:
+			if idx > Game.country_max:
+				Sfx.play("click", 0.6)
+				return
+			Sfx.play("click")
+			Game.country_idx = idx
+			Game.save_state()
+			get_tree().reload_current_scene())
+		var h := HBoxContainer.new()
+		h.set_anchors_preset(Control.PRESET_FULL_RECT)
+		h.offset_left = 14
+		h.offset_right = -14
+		h.add_theme_constant_override("separation", 16)
+		h.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		b.add_child(h)
+		var thumb := CountryThumb.new()
+		thumb.custom_minimum_size = Vector2(64, 64)
+		thumb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		thumb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		if shapes.has(cdd.name):
+			for pnt in shapes[cdd.name]:
+				thumb.poly.append(pnt)
+		thumb.col = Ui.ACCENT if unlocked else Color(0.55, 0.58, 0.65)
+		h.add_child(thumb)
+		var tv := VBoxContainer.new()
+		tv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		tv.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		tv.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		h.add_child(tv)
+		var nm := Ui.label("%d · %s" % [i + 1, str(cdd.name)], 24,
+			Ui.INK if unlocked else Ui.INK_SOFT)
+		nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		nm.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tv.add_child(nm)
+		var status := ""
+		var scol := Ui.INK_SOFT
+		if not unlocked:
+			status = tr("T_LOCKED")
+		elif i < Game.country_max:
+			status = "100%  ★"
+			scol = Color(0.72, 0.52, 0.05)
+		else:
+			status = "%d%%" % Game.country_progress()
+			scol = Ui.ACCENT
+		var st := Ui.label(status, 19, scol)
+		st.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		st.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tv.add_child(st)
+		list.add_child(b)
+	var ok := Button.new()
+	ok.text = tr("T_OK")
+	Ui.style_button(ok, Ui.ACCENT, 28)
+	ok.pressed.connect(func() -> void:
+		Sfx.play("click")
+		_close_overlay())
+	v.add_child(ok)
+
+## Tiny filled country silhouette used in the world-map list.
+class CountryThumb extends Control:
+	var poly: Array = []
+	var col := Color(0.23, 0.55, 1.0)
+
+	func _draw() -> void:
+		if poly.size() < 3:
+			draw_circle(size * 0.5, size.x * 0.4, col)
+			return
+		var pts := PackedVector2Array()
+		for p in poly:
+			pts.append(Vector2(p.x * size.x, p.y * size.y))
+		draw_colored_polygon(pts, col)
 
 func _open_help() -> void:
 	var v := _overlay_base(500)

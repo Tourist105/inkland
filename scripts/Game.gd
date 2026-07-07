@@ -21,6 +21,16 @@ const SKINS := [
 	{"name": "Violet", "price": 350, "color": Color(0.62, 0.42, 1.00), "face": 0},
 	{"name": "Noir",   "price": 400, "color": Color(0.17, 0.19, 0.25), "face": 6},
 	{"name": "Sunny",  "price": 500, "color": Color(1.00, 0.82, 0.25), "face": 7},
+	# Premium tier — long-term goals so gold stays worth chasing.
+	{"name": "Sakura", "price": 800,  "color": Color(1.00, 0.72, 0.82), "face": 3},
+	{"name": "Forest", "price": 1000, "color": Color(0.16, 0.55, 0.34), "face": 2},
+	{"name": "Royal",  "price": 1400, "color": Color(0.30, 0.28, 0.85), "face": 7},
+	{"name": "Blaze",  "price": 1800, "color": Color(1.00, 0.42, 0.10), "face": 4},
+	{"name": "Frost",  "price": 2400, "color": Color(0.70, 0.90, 1.00), "face": 5},
+	{"name": "Toxic",  "price": 3000, "color": Color(0.55, 0.95, 0.15), "face": 4},
+	{"name": "Magma",  "price": 3800, "color": Color(0.55, 0.10, 0.12), "face": 6},
+	{"name": "Pearl",  "price": 4600, "color": Color(0.97, 0.95, 0.90), "face": 1},
+	{"name": "Onyx",   "price": 6000, "color": Color(0.06, 0.06, 0.10), "face": 6},
 ]
 
 ## Locales shipped in assets/translations/strings.csv. v1 = scripts Godot's
@@ -48,8 +58,10 @@ var locale := ""            # "" = follow system
 var last_bonus_day := ""
 var seen_help := false
 var start_boost := false   # next round starts with a big claim (rewarded)
-var country_idx := 0
-var country_fill := 0.0
+var country_idx := 0        # currently SELECTED country (replays allowed)
+var country_max := 0        # highest UNLOCKED campaign country
+var country_fill := 0.0     # banked progress of the frontier country
+var blitz := false          # next round is the 1-minute quick mode
 
 ## Country-conquest meta (paper.io-2 style): every round's best territory %
 ## fills the current country; complete it for a bonus and the next country.
@@ -84,23 +96,33 @@ func claim_daily() -> int:
 
 ## Campaign meta, original-style: every run BANKS its % into the country
 ## (dying never resets progress); the bank target is COUNTRIES[i].size.
+## Only the FRONTIER country banks — replays of conquered maps are for fun.
 ## Returns true when the bank just hit the target (country conquered).
 func record_country_pct(pct: float) -> bool:
+	if country_idx != country_max:
+		return false
 	country_fill += pct
 	save_state()
 	return country_fill >= float(COUNTRIES[country_idx].size)
 
 ## Banked progress normalized to a clean 0-100% for all displays.
 func country_progress() -> int:
+	if country_idx < country_max:
+		return 100
 	return int(clampf(country_fill * 100.0 / float(COUNTRIES[country_idx].size),
 		0.0, 100.0))
 
 ## Country conquered (bank full OR a single-run win): bonus, advance.
+## Re-winning an already-conquered map pays a smaller purse.
 func conquer_country() -> int:
+	if country_idx < country_max:
+		add_coins(100)
+		return 100
 	var bonus := 250
 	add_coins(bonus)
-	if country_idx < COUNTRIES.size() - 1:
-		country_idx += 1
+	if country_max < COUNTRIES.size() - 1:
+		country_max += 1
+		country_idx = country_max
 	country_fill = 0.0
 	save_state()
 	return bonus
@@ -143,6 +165,7 @@ func skin() -> Dictionary:
 ## Returns true if pct is a new best.
 func submit_round(pct: float, _kills: int) -> bool:
 	games_played += 1
+	pct = minf(pct, 100.0)
 	var is_best := pct > best_pct
 	if is_best:
 		best_pct = pct
@@ -178,6 +201,7 @@ func save_state() -> void:
 	cf.set_value("s", "last_bonus_day", last_bonus_day)
 	cf.set_value("s", "seen_help", seen_help)
 	cf.set_value("s", "country_idx", country_idx)
+	cf.set_value("s", "country_max", country_max)
 	cf.set_value("s", "country_fill", country_fill)
 	cf.save(SAVE_PATH)
 
@@ -196,6 +220,8 @@ func load_state() -> void:
 	last_bonus_day = cf.get_value("s", "last_bonus_day", "")
 	seen_help = cf.get_value("s", "seen_help", false)
 	country_idx = cf.get_value("s", "country_idx", 0)
+	country_max = cf.get_value("s", "country_max", country_idx)
 	country_fill = cf.get_value("s", "country_fill", 0.0)
+	best_pct = minf(best_pct, 100.0)
 	if not unlocked.has(0):
 		unlocked.append(0)

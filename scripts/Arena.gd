@@ -31,7 +31,13 @@ const BOT_COUNT := 5
 const CAM_ZOOM := 2.6       # >1 zooms in (close chase view)
 const CAM_LERP := 6.0       # camera follow stiffness
 
-const BOT_NAMES := ["Momo", "Rex", "Ziggy", "Nori", "Pip", "Kato", "Luna", "Bolt"]
+# Human-feeling nicknames (like real lobbies) — the arena reads alive.
+const BOT_NAMES := ["Lena", "Marco", "Aylin", "Jonas", "Mia", "Timo_04",
+	"Sofia", "Kenji", "Ella", "Lucas99", "Nora", "Diego", "Emma", "Finn",
+	"Zoe", "Rafa", "Ivy", "Omar", "Julie", "MaxPower", "Nino", "Sara",
+	"Leo7", "Anna", "TomTom", "Yuki", "Pia", "Noah", "Lia", "Ben",
+	"Cleo", "Aron", "Mila", "Juan", "Tessa", "Kira", "PaulPro", "Elif",
+	"Rosa", "Sven"]
 const BOT_COLORS := [
 	Color(1.00, 0.42, 0.42),   # coral
 	Color(0.30, 0.82, 0.55),   # mint
@@ -64,6 +70,8 @@ var _best_flashed := false
 var _earned := 0
 var _final_pct := 0.0
 var _counts: Array[int] = []
+var _blitz_t := 60.0               # 1-minute quick mode countdown
+var _blitz_label: Label
 
 # Juice: fading white flash on freshly captured cells, floating texts, rings.
 var _flash := {}                   # cell index -> remaining seconds
@@ -107,15 +115,16 @@ var _coast_seeds := PackedInt32Array()   # land cells on the coast/edge (static)
 var _water_visited := PackedByteArray()  # water pre-marked as flood walls
 var _land_bb_lo := Vector2i.ZERO         # land bounding box (cells) — camera cage
 var _land_bb_hi := Vector2i.ZERO
+var _land_clip := PackedVector2Array()   # smooth coast polygon (clip target)
 var _land_total := 1
 
 const WATER := Color(0.76, 0.87, 0.90)   # pale lagoon, keeps the board light
 const EXTRUDE := 7.0        # jelly side height (px) under every colour slab
 const ROUND_CUT := 0.45     # corner rounding: fraction of the shorter edge
-const ROUND_MAX := 30.0     # px cap so long edges keep ruler-straight runs
+const ROUND_MAX := 34.0     # px cap so long edges keep ruler-straight runs
 
-## Rough, recognisable country silhouettes (normalized 0..1, y down = south).
-## Countries without a shape get a seeded island blob.
+## Recognisable country silhouettes for ALL campaign maps (normalized 0..1,
+## y down = south). Hand-built from geography — original art, no traced data.
 const COUNTRY_SHAPES := {
 	"Switzerland": [Vector2(0.08, 0.45), Vector2(0.25, 0.30), Vector2(0.50, 0.24),
 		Vector2(0.72, 0.30), Vector2(0.92, 0.42), Vector2(0.88, 0.62),
@@ -139,6 +148,54 @@ const COUNTRY_SHAPES := {
 		Vector2(0.76, 0.70), Vector2(0.92, 0.78), Vector2(0.86, 0.90),
 		Vector2(0.64, 0.88), Vector2(0.48, 0.74), Vector2(0.40, 0.55),
 		Vector2(0.34, 0.35), Vector2(0.20, 0.20)],
+	"Germany": [Vector2(0.34, 0.10), Vector2(0.48, 0.04), Vector2(0.56, 0.12),
+		Vector2(0.70, 0.10), Vector2(0.80, 0.22), Vector2(0.72, 0.38),
+		Vector2(0.84, 0.52), Vector2(0.76, 0.68), Vector2(0.80, 0.82),
+		Vector2(0.58, 0.92), Vector2(0.36, 0.88), Vector2(0.24, 0.74),
+		Vector2(0.14, 0.56), Vector2(0.20, 0.36), Vector2(0.12, 0.20)],
+	"France": [Vector2(0.44, 0.05), Vector2(0.64, 0.12), Vector2(0.74, 0.28),
+		Vector2(0.66, 0.46), Vector2(0.78, 0.64), Vector2(0.64, 0.78),
+		Vector2(0.46, 0.92), Vector2(0.24, 0.88), Vector2(0.30, 0.66),
+		Vector2(0.08, 0.50), Vector2(0.04, 0.40), Vector2(0.24, 0.40),
+		Vector2(0.18, 0.24), Vector2(0.32, 0.18)],
+	"Spain": [Vector2(0.08, 0.28), Vector2(0.30, 0.18), Vector2(0.56, 0.14),
+		Vector2(0.80, 0.18), Vector2(0.94, 0.32), Vector2(0.78, 0.50),
+		Vector2(0.86, 0.66), Vector2(0.70, 0.80), Vector2(0.48, 0.90),
+		Vector2(0.26, 0.92), Vector2(0.14, 0.78), Vector2(0.22, 0.60),
+		Vector2(0.20, 0.42)],
+	"Poland": [Vector2(0.18, 0.16), Vector2(0.42, 0.08), Vector2(0.62, 0.12),
+		Vector2(0.86, 0.20), Vector2(0.92, 0.44), Vector2(0.82, 0.70),
+		Vector2(0.62, 0.88), Vector2(0.36, 0.90), Vector2(0.14, 0.72),
+		Vector2(0.08, 0.44)],
+	"United Kingdom": [Vector2(0.42, 0.04), Vector2(0.58, 0.10), Vector2(0.50, 0.22),
+		Vector2(0.64, 0.34), Vector2(0.70, 0.50), Vector2(0.76, 0.66),
+		Vector2(0.64, 0.82), Vector2(0.38, 0.90), Vector2(0.46, 0.74),
+		Vector2(0.28, 0.66), Vector2(0.44, 0.50), Vector2(0.30, 0.38),
+		Vector2(0.22, 0.18)],
+	"Turkey": [Vector2(0.06, 0.42), Vector2(0.24, 0.30), Vector2(0.50, 0.24),
+		Vector2(0.78, 0.28), Vector2(0.95, 0.40), Vector2(0.90, 0.62),
+		Vector2(0.70, 0.74), Vector2(0.44, 0.78), Vector2(0.22, 0.70),
+		Vector2(0.12, 0.58)],
+	"Japan": [Vector2(0.62, 0.06), Vector2(0.76, 0.14), Vector2(0.70, 0.30),
+		Vector2(0.80, 0.42), Vector2(0.66, 0.54), Vector2(0.52, 0.64),
+		Vector2(0.40, 0.76), Vector2(0.26, 0.88), Vector2(0.14, 0.96),
+		Vector2(0.08, 0.86), Vector2(0.24, 0.72), Vector2(0.36, 0.60),
+		Vector2(0.48, 0.46), Vector2(0.56, 0.30), Vector2(0.50, 0.16)],
+	"Brazil": [Vector2(0.30, 0.10), Vector2(0.56, 0.06), Vector2(0.74, 0.18),
+		Vector2(0.88, 0.32), Vector2(0.72, 0.52), Vector2(0.60, 0.68),
+		Vector2(0.46, 0.82), Vector2(0.34, 0.94), Vector2(0.24, 0.80),
+		Vector2(0.30, 0.62), Vector2(0.12, 0.48), Vector2(0.06, 0.28),
+		Vector2(0.18, 0.14)],
+	"USA": [Vector2(0.05, 0.24), Vector2(0.30, 0.16), Vector2(0.60, 0.14),
+		Vector2(0.88, 0.20), Vector2(0.84, 0.36), Vector2(0.90, 0.52),
+		Vector2(0.78, 0.66), Vector2(0.86, 0.86), Vector2(0.74, 0.72),
+		Vector2(0.56, 0.76), Vector2(0.46, 0.92), Vector2(0.38, 0.74),
+		Vector2(0.16, 0.62), Vector2(0.04, 0.42)],
+	"World": [Vector2(0.20, 0.08), Vector2(0.46, 0.05), Vector2(0.66, 0.14),
+		Vector2(0.88, 0.20), Vector2(0.94, 0.40), Vector2(0.80, 0.52),
+		Vector2(0.88, 0.68), Vector2(0.72, 0.84), Vector2(0.50, 0.92),
+		Vector2(0.30, 0.86), Vector2(0.36, 0.68), Vector2(0.16, 0.60),
+		Vector2(0.06, 0.42), Vector2(0.12, 0.22)],
 }
 var _count_label: Label
 var _hint_label: Label
@@ -323,6 +380,16 @@ func _process(delta: float) -> void:
 			_update_camera(delta)
 			queue_redraw()
 		State.PLAYING:
+			if Game.blitz:
+				_blitz_t -= delta
+				_blitz_label.text = "%d:%02d" % [int(maxf(_blitz_t, 0.0)) / 60,
+					int(maxf(_blitz_t, 0.0)) % 60]
+				if _blitz_t <= 10.0:
+					_blitz_label.modulate = Color(1.0, 0.3, 0.3) \
+						if int(_blitz_t * 4.0) % 2 == 0 else Color.WHITE
+				if _blitz_t <= 0.0:
+					_blitz_end()
+					return
 			if _go_flash > 0.0:
 				_go_flash -= delta
 				if _go_flash <= 0.0:
@@ -878,7 +945,22 @@ func _round_won() -> void:
 	state = State.OVER
 	Sfx.play("coin")
 	Sfx.haptic(80)
-	_show_results(tr("T_RES_WIN"), true)
+	Ads.maybe_interstitial(func() -> void: _show_results(tr("T_RES_WIN"), true))
+
+## Blitz mode: the clock decides — highest territory % at 0:00 wins.
+func _blitz_end() -> void:
+	_refresh_territory()
+	state = State.OVER
+	_update_info()
+	var rank := 1
+	for p in players:
+		if not p.is_human and _counts.size() > p.id and _counts[p.id] > _counts[1]:
+			rank += 1
+	var won := rank == 1
+	Sfx.play("coin" if won else "death")
+	Sfx.haptic(80)
+	var subtitle := (tr("T_BLITZ_WIN") if won else tr("T_BLITZ_RANK") % rank)
+	Ads.maybe_interstitial(func() -> void: _show_results(subtitle, won))
 
 func _revive() -> void:
 	_revive_used = true
@@ -963,7 +1045,10 @@ func _continue_timed_out(subtitle: String) -> void:
 func _show_results(subtitle: String, won: bool) -> void:
 	_final_pct = _you_pct()
 	_max_pct = maxf(_max_pct, _final_pct)
-	_earned = int(_max_pct) + human.kills * 5
+	# Tighter economy: gold must stay worth chasing (premium skins!).
+	_earned = int(_max_pct * 0.6) + human.kills * 3
+	if Game.blitz and won:
+		_earned += 60
 	Game.add_coins(_earned)
 	var is_best := Game.submit_round(_max_pct, human.kills)
 	if _earned > 0:
@@ -975,19 +1060,24 @@ func _show_results(subtitle: String, won: bool) -> void:
 	(v.get_node("Best") as Label).visible = is_best
 	var prev_country: String = Game.COUNTRIES[Game.country_idx].name
 	var cline := ""
-	# Original rules: every run banks its % into the country; a single-run
-	# WIN conquers instantly. Either way the campaign rolls onward.
-	var conquered := won
-	if not won:
-		conquered = Game.record_country_pct(_max_pct)
-	if conquered:
-		var cbonus := Game.conquer_country()
-		cline = (tr("T_CONQUERED") % prev_country) + "  +%d
-→ %s" % [cbonus, Game.COUNTRIES[Game.country_idx].name]
+	if Game.blitz:
+		# Quick mode never touches the campaign — pure score attack.
+		cline = "%s  ·  %s" % [tr("T_BLITZ"), subtitle]
+		(v.get_node("Retry") as Button).text = tr("T_RETRY")
 	else:
-		cline = "%s  ·  %d%%" % [prev_country, Game.country_progress()]
-	(v.get_node("Retry") as Button).text = \
-		tr("T_NEXT_COUNTRY") if conquered else tr("T_RETRY")
+		# Original rules: every run banks its % into the country; a single-
+		# run WIN conquers instantly. Either way the campaign rolls onward.
+		var conquered := won
+		if not won:
+			conquered = Game.record_country_pct(_max_pct)
+		if conquered:
+			var cbonus := Game.conquer_country()
+			cline = (tr("T_CONQUERED") % prev_country) + "  +%d
+→ %s" % [cbonus, Game.COUNTRIES[Game.country_idx].name]
+		else:
+			cline = "%s  ·  %d%%" % [prev_country, Game.country_progress()]
+		(v.get_node("Retry") as Button).text = \
+			tr("T_NEXT_COUNTRY") if conquered else tr("T_RETRY")
 	(v.get_node("Stats") as Label).text = "%s  %d      %s  %.1f%%
 %s" % [
 		tr("T_KILLS"), human.kills, tr("T_BEST"), Game.best_pct, cline]
@@ -1204,6 +1294,19 @@ func _build_hud() -> void:
 	root.add_child(_hint_label)
 
 	# Modal dim + panels.
+	# Blitz countdown — big, center-top, only in quick mode.
+	_blitz_label = Ui.label("1:00", 44, Color.WHITE)
+	_blitz_label.add_theme_color_override("font_outline_color", Color(0.1, 0.12, 0.2, 0.9))
+	_blitz_label.add_theme_constant_override("outline_size", 10)
+	_blitz_label.anchor_left = 0.5
+	_blitz_label.anchor_right = 0.5
+	_blitz_label.offset_left = -110
+	_blitz_label.offset_right = 110
+	_blitz_label.offset_top = 96
+	_blitz_label.visible = Game.blitz
+	_blitz_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(_blitz_label)
+
 	_dim = Ui.dim()
 	_dim.visible = false
 	root.add_child(_dim)
@@ -1407,6 +1510,7 @@ func _retrace_land() -> void:
 	for q in smooth:
 		spts.append(q + Vector2(0, EXTRUDE + 4.0))
 	_land_loops = [{"pts": smooth, "spts": spts, "hole": false}]
+	_land_clip = smooth          # territories clip against the silky coast
 
 ## Advance the incremental retracer: start a queued owner if idle, then trace
 ## up to RT_ROWS grid rows. Finishing an owner swaps its cached polygons in
@@ -1548,14 +1652,15 @@ func _chain_loops(segs: Dictionary) -> Array:
 			if not segs.has(cur):
 				break     # broken chain — drop it, never draw garbage
 		if closed and loop.size() >= 4:
-			out.append(_finish_loop(loop, stride))
+			out.append_array(_finish_loop(loop, stride))
 	return out
 
 static func _key_dir(a: int, b: int, stride: int) -> Vector2i:
 	return Vector2i((b % stride) - (a % stride), (b / stride) - (a / stride))
 
-## Corner-key loop -> smooth world-space polygon + its extruded shadow copy.
-func _finish_loop(keys: PackedInt32Array, stride: int) -> Dictionary:
+## Corner-key loop -> smooth world-space polygon(s) + extruded shadow copies.
+## Returns an Array because the coast clip can split one loop into pieces.
+func _finish_loop(keys: PackedInt32Array, stride: int) -> Array:
 	var raw := PackedVector2Array()
 	for k in keys:
 		raw.append(Vector2(float(k % stride), float(k / stride)) * CELL)
@@ -1575,8 +1680,9 @@ func _finish_loop(keys: PackedInt32Array, stride: int) -> Dictionary:
 			pts.append(raw[i])
 	if pts.size() < 3:
 		pts = raw
-	# ...collapse cell staircases into true diagonals (the last "Stufen")...
-	var simplified := _rdp_closed(pts, 7.0)
+	# ...collapse cell staircases into true diagonals and gentle chords — the
+	# claimed area must read as smooth as the ribbon you just drew...
+	var simplified := _rdp_closed(pts, 8.5)
 	if simplified.size() >= 3:
 		pts = simplified
 	# ...then cut every corner generously and silken it with Chaikin.
@@ -1592,10 +1698,24 @@ func _finish_loop(keys: PackedInt32Array, stride: int) -> Dictionary:
 	var smooth := _chaikin_closed(rounded)
 	if smooth.size() < 1400:
 		smooth = _chaikin_closed(smooth)
+	var is_hole := area < 0.0
+	# Clip solids against the SILKY coast polygon: the territory's sea edge
+	# becomes exactly the smooth coastline — zero staircase along the water.
+	if not is_hole and _land_clip.size() >= 3:
+		var out: Array = []
+		for piece in Geometry2D.intersect_polygons(smooth, _land_clip):
+			if piece.size() < 3:
+				continue
+			var pspts := PackedVector2Array()
+			for q in piece:
+				pspts.append(q + Vector2(0, EXTRUDE))
+			out.append({"pts": piece, "spts": pspts,
+				"hole": Geometry2D.is_polygon_clockwise(piece)})
+		return out
 	var spts := PackedVector2Array()
 	for q in smooth:
 		spts.append(q + Vector2(0, EXTRUDE))
-	return {"pts": smooth, "spts": spts, "hole": area < 0.0}
+	return [{"pts": smooth, "spts": spts, "hole": is_hole}]
 
 ## Ramer-Douglas-Peucker on a closed loop (first point doubles as anchor).
 ## eps just over half a cell melts 1-cell staircases into clean diagonals
