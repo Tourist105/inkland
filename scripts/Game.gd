@@ -82,18 +82,27 @@ func claim_daily() -> int:
 	return 50
 
 
-## Add a round's % to the country; returns bonus coins if one was completed.
-func add_country_progress(pct: float) -> int:
+## Campaign meta, original-style: every run BANKS its % into the country
+## (dying never resets progress); the bank target is COUNTRIES[i].size.
+## Returns true when the bank just hit the target (country conquered).
+func record_country_pct(pct: float) -> bool:
 	country_fill += pct
-	var bonus := 0
-	while country_idx < COUNTRIES.size() - 1 			and country_fill >= float(COUNTRIES[country_idx].size):
-		country_fill -= float(COUNTRIES[country_idx].size)
+	save_state()
+	return country_fill >= float(COUNTRIES[country_idx].size)
+
+## Banked progress normalized to a clean 0-100% for all displays.
+func country_progress() -> int:
+	return int(clampf(country_fill * 100.0 / float(COUNTRIES[country_idx].size),
+		0.0, 100.0))
+
+## Country conquered (bank full OR a single-run win): bonus, advance.
+func conquer_country() -> int:
+	var bonus := 250
+	add_coins(bonus)
+	if country_idx < COUNTRIES.size() - 1:
 		country_idx += 1
-		bonus += 150
-	if bonus > 0:
-		add_coins(bonus)
-	else:
-		save_state()
+	country_fill = 0.0
+	save_state()
 	return bonus
 
 func country_tint() -> Color:

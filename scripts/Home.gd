@@ -79,8 +79,8 @@ func _build() -> void:
 	if Game.best_pct > 0.0:
 		col.add_child(Ui.label("%s  %.1f%%" % [tr("T_BEST"), Game.best_pct], 24, Ui.INK_SOFT))
 	var cd: Dictionary = Game.COUNTRIES[Game.country_idx]
-	col.add_child(Ui.label("%s  %d/%d%%" % [cd.name, int(Game.country_fill),
-		int(cd.size)], 22, Color(0.72, 0.52, 0.05)))
+	col.add_child(Ui.label("%s  %d/%d  ·  %d%%" % [cd.name, Game.country_idx + 1,
+		Game.COUNTRIES.size(), Game.country_progress()], 22, Color(0.72, 0.52, 0.05)))
 
 	var play := Button.new()
 	play.text = tr("T_PLAY")

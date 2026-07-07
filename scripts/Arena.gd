@@ -105,6 +105,8 @@ var _country_poly := PackedVector2Array()   # normalized source silhouette
 var _land := PackedByteArray()     # 1 = playable land (country silhouette)
 var _coast_seeds := PackedInt32Array()   # land cells on the coast/edge (static)
 var _water_visited := PackedByteArray()  # water pre-marked as flood walls
+var _land_bb_lo := Vector2i.ZERO         # land bounding box (cells) — camera cage
+var _land_bb_hi := Vector2i.ZERO
 var _land_total := 1
 
 const WATER := Color(0.76, 0.87, 0.90)   # pale lagoon, keeps the board light
@@ -159,10 +161,17 @@ func _ready() -> void:
 	if cam != null:
 		cam.zoom = Vector2(CAM_ZOOM, CAM_ZOOM)
 		cam.position = _cell_center(human.cx, human.cy)
-		cam.limit_left = int(-CELL * 3)
-		cam.limit_top = int(-CELL * 3)
-		cam.limit_right = int(W * CELL + CELL * 3)
-		cam.limit_bottom = int(H * CELL + CELL * 3)
+		# Cage the camera to the country: you never stare at open water or
+		# anything "outside the level".
+		var vp := get_viewport_rect().size / CAM_ZOOM
+		var lo := Vector2(_land_bb_lo) * CELL - Vector2(CELL * 4, CELL * 4)
+		var hi := Vector2(_land_bb_hi + Vector2i.ONE) * CELL + Vector2(CELL * 4, CELL * 4)
+		var pad_x := maxf(0.0, (vp.x - (hi.x - lo.x)) * 0.5)
+		var pad_y := maxf(0.0, (vp.y - (hi.y - lo.y)) * 0.5)
+		cam.limit_left = int(lo.x - pad_x)
+		cam.limit_top = int(lo.y - pad_y)
+		cam.limit_right = int(hi.x + pad_x)
+		cam.limit_bottom = int(hi.y + pad_y)
 		cam.make_current()
 	_build_hud()
 	Ads.hide_banner()          # never over the arena
@@ -248,15 +257,21 @@ func _respawn(p: InkPlayer) -> void:
 	p.going_home = false
 	p.plan.clear()
 	p.trail.clear()
-	p.trail_rev = -1
+	p.ribbon.clear()
+	p.ribbon_stale = false
 	var rad := START_RADIUS
 	if p.is_human and Game.start_boost:
 		rad = 10                       # rewarded "start big" (~5x area)
 		Game.start_boost = false
 		Game.save_state()
+	# Round starting blob (like the original), clipped to land.
+	var rr := rad * rad + rad
 	for y in range(p.home.y - rad, p.home.y + rad + 1):
 		for x in range(p.home.x - rad, p.home.x + rad + 1):
-			if in_bounds(x, y):
+			var dx := x - p.home.x
+			var dy := y - p.home.y
+			if in_bounds(x, y) and dx * dx + dy * dy <= rr \
+					and _land[idx(x, y)] == 1:
 				grid[idx(x, y)] = p.id
 	_bb_mark(p.id, p.home.x - rad, p.home.y - rad, p.home.x + rad, p.home.y + rad)
 	_dirty_owners[p.id] = true
@@ -375,14 +390,22 @@ func _move_actors(dt: float) -> void:
 		p.pos = Vector2(clampf(p.pos.x, m, W * CELL - m),
 			clampf(p.pos.y, m, H * CELL - m))
 		if not land(int(p.pos.x / CELL), int(p.pos.y / CELL)):
-			var sx := Vector2(p.pos.x, old_pos.y)
-			var sy := Vector2(old_pos.x, p.pos.y)
-			if land(int(sx.x / CELL), int(sx.y / CELL)):
-				p.pos = sx
-			elif land(int(sy.x / CELL), int(sy.y / CELL)):
-				p.pos = sy
-			else:
-				p.pos = old_pos
+			# Slide along the coast: take the LARGEST axis sub-step that stays
+			# on land — much smoother than full-step-or-freeze.
+			var best := old_pos
+			var best_d := 0.0
+			for f: float in [1.0, 0.66, 0.33]:
+				var cx2 := Vector2(old_pos.x + (p.pos.x - old_pos.x) * f, old_pos.y)
+				var cy2 := Vector2(old_pos.x, old_pos.y + (p.pos.y - old_pos.y) * f)
+				if absf(cx2.x - old_pos.x) > best_d \
+						and land(int(cx2.x / CELL), int(cx2.y / CELL)):
+					best = cx2
+					best_d = absf(cx2.x - old_pos.x)
+				if absf(cy2.y - old_pos.y) > best_d \
+						and land(int(cy2.x / CELL), int(cy2.y / CELL)):
+					best = cy2
+					best_d = absf(cy2.y - old_pos.y)
+			p.pos = best
 		# Cell-entry events (one axis at a time — no corner skipping).
 		var nx := int(p.pos.x / CELL)
 		var ny := int(p.pos.y / CELL)
@@ -391,6 +414,15 @@ func _move_actors(dt: float) -> void:
 				_enter_cell(p, p.cx + signi(nx - p.cx), p.cy)
 			else:
 				_enter_cell(p, p.cx, p.cy + signi(ny - p.cy))
+		# Render ribbon: sample the head's true continuous path while drawing —
+		# the line on screen is pure arcs, never grid stairs.
+		if p.alive and p.is_out:
+			if p.ribbon_stale:
+				p.ribbon.clear()
+				p.ribbon_stale = false
+			var rn := p.ribbon.size()
+			if rn == 0 or p.ribbon[rn - 1].distance_squared_to(p.pos) > 25.0:
+				p.ribbon.append(p.pos)
 
 static func _cardinal(heading: float) -> Vector2i:
 	var v := Vector2.from_angle(heading)
@@ -447,7 +479,8 @@ func _kill(p: InkPlayer, killer: InkPlayer, cause: String) -> void:
 	for c in p.trail:
 		trail_owner[idx(c.x, c.y)] = 0
 	p.trail.clear()
-	p.trail_rev = -1
+	p.ribbon.clear()
+	p.ribbon_stale = false
 	p.is_out = false
 	if p.is_human:
 		_human_died(cause, killer)      # land stays put (revive keeps it)
@@ -502,7 +535,7 @@ func _commit(p: InkPlayer) -> void:
 	if tx1 >= tx0:
 		_bb_mark(p.id, tx0, ty0, tx1, ty1)
 	p.trail.clear()
-	p.trail_rev = -1
+	p.ribbon_stale = true      # keep the ribbon until the polygon lands
 	_dirty_owners[p.id] = true
 
 	# 2. Flood the "outside" from the border through every non-owned cell.
@@ -859,9 +892,13 @@ func _revive() -> void:
 		if spot == Vector2i(-1, -1):
 			spot = human.home
 		human.home = spot
+		var rvr := START_RADIUS * START_RADIUS + START_RADIUS
 		for y in range(spot.y - START_RADIUS, spot.y + START_RADIUS + 1):
 			for x in range(spot.x - START_RADIUS, spot.x + START_RADIUS + 1):
-				if in_bounds(x, y) and _land[idx(x, y)] == 1:
+				var dx := x - spot.x
+				var dy := y - spot.y
+				if in_bounds(x, y) and dx * dx + dy * dy <= rvr \
+						and _land[idx(x, y)] == 1:
 					var pv := grid[idx(x, y)]
 					if pv != 0 and pv != human.id:
 						_dirty_owners[pv] = true
@@ -879,7 +916,8 @@ func _revive() -> void:
 	_human_has_target = false
 	human.is_out = false
 	human.trail.clear()
-	human.trail_rev = -1
+	human.ribbon.clear()
+	human.ribbon_stale = false
 	human.pending_dir = Vector2i.ZERO
 	if cam != null:
 		cam.position = _cell_center(spot.x, spot.y)
@@ -936,12 +974,20 @@ func _show_results(subtitle: String, won: bool) -> void:
 	(v.get_node("Pct") as Label).text = "%.1f%%" % _final_pct
 	(v.get_node("Best") as Label).visible = is_best
 	var prev_country: String = Game.COUNTRIES[Game.country_idx].name
-	var cbonus := Game.add_country_progress(_max_pct)
-	var cd: Dictionary = Game.COUNTRIES[Game.country_idx]
-	var cline := "%s  %d/%d%%" % [cd.name, int(Game.country_fill), int(cd.size)]
-	if cbonus > 0:
+	var cline := ""
+	# Original rules: every run banks its % into the country; a single-run
+	# WIN conquers instantly. Either way the campaign rolls onward.
+	var conquered := won
+	if not won:
+		conquered = Game.record_country_pct(_max_pct)
+	if conquered:
+		var cbonus := Game.conquer_country()
 		cline = (tr("T_CONQUERED") % prev_country) + "  +%d
-%s" % [cbonus, cline]
+→ %s" % [cbonus, Game.COUNTRIES[Game.country_idx].name]
+	else:
+		cline = "%s  ·  %d%%" % [prev_country, Game.country_progress()]
+	(v.get_node("Retry") as Button).text = \
+		tr("T_NEXT_COUNTRY") if conquered else tr("T_RETRY")
 	(v.get_node("Stats") as Label).text = "%s  %d      %s  %.1f%%
 %s" % [
 		tr("T_KILLS"), human.kills, tr("T_BEST"), Game.best_pct, cline]
@@ -973,6 +1019,11 @@ func _update_camera(delta: float) -> void:
 	var target := _head_visual(human)
 	var t := clampf(CAM_LERP * delta, 0.0, 1.0)
 	cam.position = cam.position.lerp(target, t)
+	# Gentle zoom-out as the empire grows (original behaviour) — you see more
+	# of what you own without ever losing the close-chase feel.
+	var zt := CAM_ZOOM * lerpf(1.0, 0.74, clampf(_you_pct() / 60.0, 0.0, 1.0))
+	var z := lerpf(cam.zoom.x, zt, clampf(1.5 * delta, 0.0, 1.0))
+	cam.zoom = Vector2(z, z)
 	if _shake > 0.1:
 		_shake *= exp(-7.0 * delta)
 		cam.offset = Vector2(randf_range(-_shake, _shake), randf_range(-_shake, _shake))
@@ -1265,6 +1316,7 @@ func _build_results_panel() -> PanelContainer:
 	v.add_child(dbl)
 
 	var retry := Button.new()
+	retry.name = "Retry"
 	retry.text = tr("T_RETRY")
 	Ui.style_button(retry, Ui.ACCENT, 32)
 	retry.pressed.connect(_retry)
@@ -1420,6 +1472,9 @@ func _rebuild_owner_node(oid: int) -> void:
 	for c in node.get_children():
 		c.queue_free()
 	var p := players[oid - 1]
+	if p.ribbon_stale:
+		p.ribbon.clear()          # the claimed polygon now covers the ribbon
+		p.ribbon_stale = false
 	var loops: Array = _terr_loops[oid - 1]
 	for tp in loops:
 		if not tp.hole:
@@ -1521,7 +1576,7 @@ func _finish_loop(keys: PackedInt32Array, stride: int) -> Dictionary:
 	if pts.size() < 3:
 		pts = raw
 	# ...collapse cell staircases into true diagonals (the last "Stufen")...
-	var simplified := _rdp_closed(pts, 6.0)
+	var simplified := _rdp_closed(pts, 7.0)
 	if simplified.size() >= 3:
 		pts = simplified
 	# ...then cut every corner generously and silken it with Chaikin.
@@ -1535,7 +1590,7 @@ func _finish_loop(keys: PackedInt32Array, stride: int) -> Dictionary:
 		rounded.append(v + (pv - v).normalized() * cut)
 		rounded.append(v + (nx - v).normalized() * cut)
 	var smooth := _chaikin_closed(rounded)
-	if smooth.size() < 700:
+	if smooth.size() < 1400:
 		smooth = _chaikin_closed(smooth)
 	var spts := PackedVector2Array()
 	for q in smooth:
@@ -1613,6 +1668,8 @@ func _build_land_mask() -> void:
 	# Fit with a small margin; grid is portrait so shapes sit centred.
 	var m := 0.05
 	_land_total = 0
+	_land_bb_lo = Vector2i(W, H)
+	_land_bb_hi = Vector2i(0, 0)
 	for y in H:
 		for x in W:
 			var pnt := Vector2(m + (1.0 - 2.0 * m) * (x + 0.5) / W,
@@ -1621,6 +1678,8 @@ func _build_land_mask() -> void:
 			_land[idx(x, y)] = 1 if inside else 0
 			if inside:
 				_land_total += 1
+				_land_bb_lo = Vector2i(mini(_land_bb_lo.x, x), mini(_land_bb_lo.y, y))
+				_land_bb_hi = Vector2i(maxi(_land_bb_hi.x, x), maxi(_land_bb_hi.y, y))
 	_land_total = maxi(_land_total, 1)
 	# Static flood helpers: water-as-wall mask + coastal seed cells.
 	_water_visited.resize(W * H)
@@ -1652,21 +1711,14 @@ func _visible_cells() -> Rect2i:
 func _draw() -> void:
 	# Water/land/territory live in cached Polygon2D layers below (z -1/-2) —
 	# triangulated once per retrace, not every frame.
-	# Active trails: one continuous rounded ribbon per player, ending exactly
-	# AT the head — never ahead of it. The settled part of the curve is cached
-	# and only rebuilt when a new cell joins the trail.
+	# Active trails: the head's true continuous path, ending exactly AT the
+	# head — pure fluid arcs, no grid-derived geometry at all.
 	for p in players:
-		if p.trail.is_empty():
-			continue
-		if p.trail.size() != p.trail_rev:
-			p.trail_rev = p.trail.size()
-			var cs := PackedVector2Array()
-			for j in p.trail.size() - 1:      # newest cell excluded — the head
-				cs.append(_cell_center(p.trail[j].x, p.trail[j].y))
-			p.trail_smooth = _chaikin(_chaikin(cs))
-		var pts := p.trail_smooth.duplicate()
+		var pts := p.ribbon.duplicate()
 		if p.alive and p.is_out:
 			pts.append(_head_visual(p))
+		if pts.is_empty():
+			continue
 		var main_c: Color = p.color.lightened(0.30)
 		var rim_c: Color = p.color.darkened(0.16)
 		var w := TRAIL_W
@@ -1684,6 +1736,13 @@ func _draw() -> void:
 			draw_circle(pts[0], w * 0.5, main_c)
 
 	# Heads — interpolated blobs with faces, then name tags.
+	# Crown on the current territory king — the original's "who leads?" cue.
+	var king := 0
+	var kc := 0
+	for p in players:
+		if p.alive and _counts.size() > p.id and _counts[p.id] > kc:
+			kc = _counts[p.id]
+			king = p.id
 	for p in players:
 		if p.alive:
 			var c := _head_visual(p)
@@ -1693,6 +1752,12 @@ func _draw() -> void:
 			draw_circle(c, HEAD_R * 1.55, glow)
 			SkinArt.draw_blob(self, c, HEAD_R, p.color, p.face,
 				Vector2.from_angle(p.heading))
+			if p.id == king:
+				var b := c + Vector2(0, -HEAD_R - 9.0)
+				draw_colored_polygon(PackedVector2Array([
+					b + Vector2(-9, 3), b + Vector2(-9, -6), b + Vector2(-4.5, -1.5),
+					b + Vector2(0, -8), b + Vector2(4.5, -1.5), b + Vector2(9, -6),
+					b + Vector2(9, 3)]), Ui.GOLD)
 	var font := ThemeDB.fallback_font
 	for p in players:
 		if p.alive and not p.is_human:

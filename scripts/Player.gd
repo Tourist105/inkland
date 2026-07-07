@@ -21,10 +21,11 @@ var pending_dir: Vector2i = Vector2i.ZERO
 var is_out: bool = false
 var trail: Array[Vector2i] = []
 
-## Render cache: smoothed ribbon of the settled trail (all but the newest
-## cell). Rebuilt only when the trail length changes — not every frame.
-var trail_rev: int = -1
-var trail_smooth: PackedVector2Array = PackedVector2Array()
+## Render-only ribbon: the head's TRUE continuous path this excursion. Drawn
+## instead of grid cells, so the line is pure arcs — zero grid staircase.
+## ribbon_stale keeps it on screen until the claimed polygon replaces it.
+var ribbon: PackedVector2Array = PackedVector2Array()
+var ribbon_stale: bool = false
 
 var respawn_in: float = 0.0
 var kills: int = 0
