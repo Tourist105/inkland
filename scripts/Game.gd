@@ -160,6 +160,26 @@ func select_skin(i: int) -> void:
 func skin() -> Dictionary:
 	return SKINS[clampi(selected_skin, 0, SKINS.size() - 1)]
 
+# ----------------------------------------------------------------- missions --
+## Endless mission ladder — a fresh goal after every round.
+const MISSION_TYPES := ["pct", "kills"]
+var mission_tiers := {}
+
+func mission_goal(t: String) -> int:
+	var tier: int = mission_tiers.get(t, 0)
+	if t == "pct":
+		return mini(int(10 * pow(1.35, tier)), 95)
+	return int(3 * pow(1.5, tier))
+
+func mission_reward(t: String) -> int:
+	return 30 * (int(mission_tiers.get(t, 0)) + 1)
+
+func mission_complete(t: String) -> int:
+	var r := mission_reward(t)
+	mission_tiers[t] = int(mission_tiers.get(t, 0)) + 1
+	add_coins(r)
+	return r
+
 # ------------------------------------------------------------------- record --
 
 ## Returns true if pct is a new best.
@@ -200,6 +220,7 @@ func save_state() -> void:
 	cf.set_value("s", "locale", locale)
 	cf.set_value("s", "last_bonus_day", last_bonus_day)
 	cf.set_value("s", "seen_help", seen_help)
+	cf.set_value("s", "mission_tiers", mission_tiers)
 	cf.set_value("s", "country_idx", country_idx)
 	cf.set_value("s", "country_max", country_max)
 	cf.set_value("s", "country_fill", country_fill)
@@ -219,6 +240,7 @@ func load_state() -> void:
 	locale = cf.get_value("s", "locale", "")
 	last_bonus_day = cf.get_value("s", "last_bonus_day", "")
 	seen_help = cf.get_value("s", "seen_help", false)
+	mission_tiers = cf.get_value("s", "mission_tiers", {})
 	country_idx = cf.get_value("s", "country_idx", 0)
 	country_max = cf.get_value("s", "country_max", country_idx)
 	country_fill = cf.get_value("s", "country_fill", 0.0)

@@ -90,6 +90,14 @@ func _build() -> void:
 		_open_countries())
 	col.add_child(cbtn)
 
+	# Mission ladder at a glance — always a reason for one more round.
+	var mline := ""
+	for t in Game.MISSION_TYPES:
+		var g := Game.mission_goal(str(t))
+		var txt: String = (tr("T_MI_PCT") if str(t) == "pct" else tr("T_MI_KILLS")) % g
+		mline += "› %s +%d   " % [txt, Game.mission_reward(str(t))]
+	col.add_child(Ui.label(mline.strip_edges(), 15, Ui.INK_SOFT))
+
 	var play := Button.new()
 	play.text = tr("T_PLAY")
 	Ui.style_button(play, Ui.ACCENT, 40, Color.WHITE, 40)

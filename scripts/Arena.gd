@@ -72,6 +72,8 @@ var _final_pct := 0.0
 var _counts: Array[int] = []
 var _blitz_t := 60.0               # 1-minute quick mode countdown
 var _blitz_label: Label
+var _streak := 0                   # chained-kill announcement window
+var _streak_t := 0.0
 
 # Juice: fading white flash on freshly captured cells, floating texts, rings.
 var _flash := {}                   # cell index -> remaining seconds
@@ -509,6 +511,16 @@ func _enter_cell(p: InkPlayer, nx: int, ny: int) -> void:
 				Sfx.play("kill")
 				Sfx.haptic(60)
 				_add_text_fx(_cell_center(nx, ny), "+1", p.color)
+				# Streak announcements — chained kills feel HUGE.
+				_streak = _streak + 1 if _streak_t > 0.0 else 1
+				_streak_t = 4.0
+				if _streak >= 2:
+					var s_txt: String = ["DOUBLE KILL!", "TRIPLE KILL!",
+						"RAMPAGE!"][mini(_streak - 2, 2)]
+					_add_text_fx(_head_visual(p) - Vector2(0, CELL * 3.0),
+						s_txt, Ui.GOLD.darkened(0.05))
+					Sfx.play("coin", 1.2)
+					_shake = maxf(_shake, 4.0)
 			_kill(victim, p, "cut")
 		else:
 			# Touching the tail right behind the head is just jitter — ignore.
@@ -1049,6 +1061,10 @@ func _show_results(subtitle: String, won: bool) -> void:
 	_earned = int(_max_pct * 0.6) + human.kills * 3
 	if Game.blitz and won:
 		_earned += 60
+	# PERFECT: the whole map in one life — the original's fabled feat.
+	var perfect := won and _max_pct >= 99.5 and not _revive_used
+	if perfect:
+		_earned += 300
 	Game.add_coins(_earned)
 	var is_best := Game.submit_round(_max_pct, human.kills)
 	if _earned > 0:
@@ -1078,6 +1094,18 @@ func _show_results(subtitle: String, won: bool) -> void:
 			cline = "%s  ·  %d%%" % [prev_country, Game.country_progress()]
 		(v.get_node("Retry") as Button).text = \
 			tr("T_NEXT_COUNTRY") if conquered else tr("T_RETRY")
+	if perfect:
+		cline = "PERFECT!  +300
+" + cline
+	# Missions — rising goals, paid instantly.
+	var vals := {"pct": int(_max_pct), "kills": human.kills}
+	for t in Game.MISSION_TYPES:
+		var goal := Game.mission_goal(str(t))
+		if int(vals[t]) >= goal:
+			var mreward := Game.mission_complete(str(t))
+			var mtxt: String = (tr("T_MI_PCT") if str(t) == "pct" else tr("T_MI_KILLS")) % goal
+			cline += "
+› %s  +%d" % [mtxt, mreward]
 	(v.get_node("Stats") as Label).text = "%s  %d      %s  %.1f%%
 %s" % [
 		tr("T_KILLS"), human.kills, tr("T_BEST"), Game.best_pct, cline]
@@ -1136,6 +1164,7 @@ func _add_ring_fx(pos: Vector2, color: Color) -> void:
 	_fx.append({"kind": "ring", "pos": pos, "color": color, "t": 0.5})
 
 func _age_fx(delta: float) -> void:
+	_streak_t = maxf(0.0, _streak_t - delta)
 	for i in range(_fx.size() - 1, -1, -1):
 		_fx[i].t -= delta
 		if _fx[i].t <= 0.0:
