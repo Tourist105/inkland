@@ -128,12 +128,20 @@ const ROUND_MAX := 34.0     # px cap so long edges keep ruler-straight runs
 ## Recognisable country silhouettes for ALL campaign maps (normalized 0..1,
 ## y down = south). Hand-built from geography — original art, no traced data.
 const COUNTRY_SHAPES := {
-	"Switzerland": [Vector2(0.08, 0.45), Vector2(0.25, 0.30), Vector2(0.50, 0.24),
-		Vector2(0.72, 0.30), Vector2(0.92, 0.42), Vector2(0.88, 0.62),
-		Vector2(0.68, 0.72), Vector2(0.45, 0.76), Vector2(0.22, 0.68), Vector2(0.10, 0.58)],
-	"Austria": [Vector2(0.05, 0.52), Vector2(0.22, 0.42), Vector2(0.42, 0.40),
-		Vector2(0.62, 0.36), Vector2(0.92, 0.34), Vector2(0.95, 0.50),
-		Vector2(0.74, 0.58), Vector2(0.50, 0.60), Vector2(0.28, 0.66), Vector2(0.10, 0.64)],
+	# Wide & lumpy with the western Geneva point, the Graubünden tail east
+	# and the Ticino spur dipping south — reads as Switzerland, not a blob.
+	"Switzerland": [Vector2(0.06, 0.55), Vector2(0.15, 0.42), Vector2(0.25, 0.35),
+		Vector2(0.36, 0.32), Vector2(0.47, 0.35), Vector2(0.60, 0.31),
+		Vector2(0.72, 0.35), Vector2(0.85, 0.41), Vector2(0.94, 0.51),
+		Vector2(0.85, 0.59), Vector2(0.73, 0.63), Vector2(0.66, 0.74),
+		Vector2(0.56, 0.65), Vector2(0.43, 0.69), Vector2(0.29, 0.66),
+		Vector2(0.16, 0.62)],
+	# Long east-west sprawl with the thin Tyrol arm reaching west.
+	"Austria": [Vector2(0.04, 0.52), Vector2(0.16, 0.46), Vector2(0.28, 0.48),
+		Vector2(0.40, 0.44), Vector2(0.52, 0.40), Vector2(0.66, 0.36),
+		Vector2(0.82, 0.34), Vector2(0.94, 0.40), Vector2(0.90, 0.54),
+		Vector2(0.76, 0.60), Vector2(0.60, 0.58), Vector2(0.46, 0.60),
+		Vector2(0.34, 0.62), Vector2(0.20, 0.60), Vector2(0.09, 0.58)],
 	"Netherlands": [Vector2(0.30, 0.14), Vector2(0.62, 0.10), Vector2(0.76, 0.26),
 		Vector2(0.70, 0.50), Vector2(0.80, 0.74), Vector2(0.55, 0.86),
 		Vector2(0.34, 0.80), Vector2(0.24, 0.60), Vector2(0.36, 0.40), Vector2(0.20, 0.28)],
@@ -452,47 +460,14 @@ func _move_actors(dt: float) -> void:
 		p.pos += Vector2.from_angle(p.heading) * SPEED * dt
 		p.dir = _cardinal(p.heading)          # bots' brain works in cardinals
 
-		# Board edge and coastline are WALLS, never death (original rules):
-		# you slide along them — riding the border to seal off a corner is a
-		# legitimate, satisfying capture strategy.
+		# The coast is a smooth WALL (never death): glide along it, keeping the
+		# tangential part of your motion — exactly the original's feel.
 		var m := CELL * 0.5
 		p.pos = Vector2(clampf(p.pos.x, m, W * CELL - m),
 			clampf(p.pos.y, m, H * CELL - m))
-		if not land(int(p.pos.x / CELL), int(p.pos.y / CELL)):
-			# Slide along the coast: take the LARGEST axis sub-step that stays
-			# on land — much smoother than full-step-or-freeze.
-			var best := old_pos
-			var best_d := 0.0
-			for f: float in [1.0, 0.66, 0.33]:
-				var cx2 := Vector2(old_pos.x + (p.pos.x - old_pos.x) * f, old_pos.y)
-				var cy2 := Vector2(old_pos.x, old_pos.y + (p.pos.y - old_pos.y) * f)
-				if absf(cx2.x - old_pos.x) > best_d \
-						and land(int(cx2.x / CELL), int(cx2.y / CELL)):
-					best = cx2
-					best_d = absf(cx2.x - old_pos.x)
-				if absf(cy2.y - old_pos.y) > best_d \
-						and land(int(cy2.x / CELL), int(cy2.y / CELL)):
-					best = cy2
-					best_d = absf(cy2.y - old_pos.y)
-			p.pos = best
-		# The RENDERED coast is the smooth polygon — never drive visibly past
-		# it (the cell mask alone lets the head poke out into the water).
 		if _land_clip.size() >= 3 \
 				and not Geometry2D.is_point_in_polygon(p.pos, _land_clip):
-			var bp := old_pos
-			var bd := 0.0
-			for f2: float in [1.0, 0.66, 0.33]:
-				var d1 := Vector2(old_pos.x + (p.pos.x - old_pos.x) * f2, old_pos.y)
-				var d2 := Vector2(old_pos.x, old_pos.y + (p.pos.y - old_pos.y) * f2)
-				if absf(d1.x - old_pos.x) > bd \
-						and Geometry2D.is_point_in_polygon(d1, _land_clip):
-					bp = d1
-					bd = absf(d1.x - old_pos.x)
-				if absf(d2.y - old_pos.y) > bd \
-						and Geometry2D.is_point_in_polygon(d2, _land_clip):
-					bp = d2
-					bd = absf(d2.y - old_pos.y)
-			p.pos = bp
+			p.pos = _slide_coast(old_pos, p.pos)
 		# Cell-entry events (one axis at a time — no corner skipping).
 		var nx := int(p.pos.x / CELL)
 		var ny := int(p.pos.y / CELL)
@@ -510,6 +485,44 @@ func _move_actors(dt: float) -> void:
 			var rn := p.ribbon.size()
 			if rn == 0 or p.ribbon[rn - 1].distance_squared_to(p.pos) > 25.0:
 				p.ribbon.append(p.pos)
+
+## Wall-slide against the smooth coast: find where the move leaves the land,
+## then continue along the coast tangent so speed isn't killed — smooth glide,
+## no axis stutter.
+func _slide_coast(from: Vector2, to: Vector2) -> Vector2:
+	var a := from
+	var b := to
+	for _i in 7:                       # binary-search the boundary crossing
+		var mid := (a + b) * 0.5
+		if Geometry2D.is_point_in_polygon(mid, _land_clip):
+			a = mid
+		else:
+			b = mid
+	var contact := a
+	var residual := to - contact
+	var tan := _coast_tangent(contact)
+	var slid := contact + tan * residual.dot(tan)
+	if Geometry2D.is_point_in_polygon(slid, _land_clip):
+		return slid
+	return contact
+
+## Direction of the nearest coast edge to `pt` (unit tangent).
+func _coast_tangent(pt: Vector2) -> Vector2:
+	var n := _land_clip.size()
+	var best_d := 1e20
+	var best := Vector2.RIGHT
+	for i in n:
+		var a := _land_clip[i]
+		var b := _land_clip[(i + 1) % n]
+		var ab := b - a
+		var l2 := ab.length_squared()
+		var t := 0.0 if l2 < 0.001 else clampf((pt - a).dot(ab) / l2, 0.0, 1.0)
+		var proj := a + ab * t
+		var d := pt.distance_squared_to(proj)
+		if d < best_d:
+			best_d = d
+			best = ab.normalized()
+	return best
 
 static func _cardinal(heading: float) -> Vector2i:
 	var v := Vector2.from_angle(heading)
@@ -1080,7 +1093,7 @@ func _show_results(subtitle: String, won: bool) -> void:
 	if Game.blitz and won:
 		_earned += 60
 	# PERFECT: the whole map in one life — the original's fabled feat.
-	var perfect := won and _max_pct >= 99.5 and not _revive_used
+	var perfect := won and _max_pct >= 98.5 and not _revive_used
 	if perfect:
 		_earned += 300
 	Game.add_coins(_earned)
@@ -1235,7 +1248,9 @@ func _update_info() -> void:
 			tr("T_NEW_BEST"), Ui.GOLD.darkened(0.1))
 		Sfx.play("coin")
 		Sfx.haptic(40)
-	if state == State.PLAYING and you >= 99.5:
+	# Cellizing a smooth coast leaves a hair of un-fillable rim, so "full map"
+	# is 98.5% — reliably reachable now that mask == rendered coast.
+	if state == State.PLAYING and not Game.blitz and you >= 98.5:
 		_round_won()
 
 func _build_hud() -> void:
@@ -1533,11 +1548,10 @@ func _build_territory_layers() -> void:
 		_terr_root.add_child(nd)
 		_dirty_owners[k + 1] = true
 
-## The coast is rendered from the SOURCE silhouette polygon, not from the
-## rasterized cell mask — that keeps it silky at any zoom. The mask is only
-## used for gameplay, so territory may overhang the drawn water by up to a
-## cell: reads as the jelly slab bleeding over the edge, which is the look.
-func _retrace_land() -> void:
+## World-space smooth coastline from the normalized silhouette. Light
+## rounding + a single Chaikin pass keeps each country's OUTLINE (corners,
+## bays) instead of melting it into a blob.
+func _smooth_country_poly() -> PackedVector2Array:
 	var mrg := 0.05
 	var board := Vector2(W * CELL, H * CELL)
 	var pts := PackedVector2Array()
@@ -1549,15 +1563,19 @@ func _retrace_land() -> void:
 		var pv := pts[(i + n - 1) % n]
 		var v := pts[i]
 		var nx := pts[(i + 1) % n]
-		var cut := minf(v.distance_to(pv), v.distance_to(nx)) * 0.28
+		var cut := minf(v.distance_to(pv), v.distance_to(nx)) * 0.16
 		rounded.append(v + (pv - v).normalized() * cut)
 		rounded.append(v + (nx - v).normalized() * cut)
-	var smooth := _chaikin_closed(_chaikin_closed(rounded))
+	return _chaikin_closed(rounded)
+
+## Build the render loop from the SAME smooth polygon the mask uses, so what
+## you see, what you can reach and what the game counts are all identical.
+func _retrace_land() -> void:
+	var smooth := _land_clip
 	var spts := PackedVector2Array()
 	for q in smooth:
 		spts.append(q + Vector2(0, EXTRUDE + 4.0))
 	_land_loops = [{"pts": smooth, "spts": spts, "hole": false}]
-	_land_clip = smooth          # territories clip against the silky coast
 
 ## Advance the incremental retracer: start a queued owner if idle, then trace
 ## up to RT_ROWS grid rows. Finishing an owner swaps its cached polygons in
@@ -1832,16 +1850,17 @@ func _build_land_mask() -> void:
 			var rad := 0.34 + 0.10 * sin(k * 2.7 + seed_f) + 0.06 * sin(k * 4.3 + seed_f * 2.0)
 			poly.append(Vector2(0.5, 0.5) + Vector2(cos(ang), sin(ang) * 0.9) * rad)
 	_country_poly = poly
-	# Fit with a small margin; grid is portrait so shapes sit centred.
-	var m := 0.05
+	# The playable land is EXACTLY the smooth rendered coast — mask == clip,
+	# so no rim cell is ever unreachable (that was the 98%-hang) and movement
+	# collides against the very edge you see.
+	_land_clip = _smooth_country_poly()
 	_land_total = 0
 	_land_bb_lo = Vector2i(W, H)
 	_land_bb_hi = Vector2i(0, 0)
 	for y in H:
 		for x in W:
-			var pnt := Vector2(m + (1.0 - 2.0 * m) * (x + 0.5) / W,
-				m + (1.0 - 2.0 * m) * (y + 0.5) / H)
-			var inside := Geometry2D.is_point_in_polygon(pnt, poly)
+			var inside := Geometry2D.is_point_in_polygon(
+				Vector2((x + 0.5) * CELL, (y + 0.5) * CELL), _land_clip)
 			_land[idx(x, y)] = 1 if inside else 0
 			if inside:
 				_land_total += 1
