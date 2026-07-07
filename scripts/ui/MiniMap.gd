@@ -14,6 +14,9 @@ func setup(arena_) -> void:
 	custom_minimum_size = Vector2(92, 158)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
+func _process(_delta: float) -> void:
+	queue_redraw()      # head dots move every frame even when territory doesn't
+
 func refresh() -> void:
 	var neutral := Color(1, 1, 1, 0.92)
 	var water := Color(0, 0, 0, 0)       # only the country silhouette shows

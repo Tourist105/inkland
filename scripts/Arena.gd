@@ -82,15 +82,35 @@ var _info_acc := 0.0
 var _land_loops: Array = []        # smoothed country outline: {pts, spts, hole}
 var _terr_loops: Array = []        # per player: Array of {pts, spts, hole}
 var _dirty_owners := {}            # player ids whose outline needs a retrace
+var _terr_root: Node2D             # cached Polygon2D layers live under here
+var _pnodes: Array[Node2D] = []    # per player: container of its polygons
+var _land_child_count := 0
+var _bb_lo: Array[Vector2i] = []   # per player: territory bounding box (cells)
+var _bb_hi: Array[Vector2i] = []
+var _map_acc := 0.0
+var _map_dirty := true
+
+# Incremental retracer state (RT_ROWS rows per frame — no commit spikes).
+const RT_ROWS := 48
+var _rt_oid := 0                   # owner currently being traced (0 = idle)
+var _rt_segs := {}
+var _rt_y := 0
+var _rt_y1 := 0
+var _rt_x0 := 0
+var _rt_x1 := 0
+var _rt_t0 := Vector2i.ZERO        # tight bbox observed during the scan
+var _rt_t1 := Vector2i.ZERO
 var _paper := Color(0.955, 0.985, 0.965)
 var _country_poly := PackedVector2Array()   # normalized source silhouette
 var _land := PackedByteArray()     # 1 = playable land (country silhouette)
+var _coast_seeds := PackedInt32Array()   # land cells on the coast/edge (static)
+var _water_visited := PackedByteArray()  # water pre-marked as flood walls
 var _land_total := 1
 
 const WATER := Color(0.76, 0.87, 0.90)   # pale lagoon, keeps the board light
 const EXTRUDE := 7.0        # jelly side height (px) under every colour slab
 const ROUND_CUT := 0.45     # corner rounding: fraction of the shorter edge
-const ROUND_MAX := 26.0     # px cap so long edges keep ruler-straight runs
+const ROUND_MAX := 30.0     # px cap so long edges keep ruler-straight runs
 
 ## Rough, recognisable country silhouettes (normalized 0..1, y down = south).
 ## Countries without a shape get a seeded island blob.
@@ -209,8 +229,12 @@ func _bot_palette(mine: Color) -> Array:
 func _respawn(p: InkPlayer) -> void:
 	if not p.is_human:
 		var spot := _find_free_spot()
-		if spot != Vector2i(-1, -1):
-			p.home = spot
+		if spot == Vector2i(-1, -1):
+			# Map is packed — never paint over someone's land. Try again later;
+			# late-game this lets the arena actually fill up to a 100% win.
+			p.respawn_in = RESPAWN
+			return
+		p.home = spot
 	p.alive = true
 	p.cx = p.home.x
 	p.cy = p.home.y
@@ -224,6 +248,7 @@ func _respawn(p: InkPlayer) -> void:
 	p.going_home = false
 	p.plan.clear()
 	p.trail.clear()
+	p.trail_rev = -1
 	var rad := START_RADIUS
 	if p.is_human and Game.start_boost:
 		rad = 10                       # rewarded "start big" (~5x area)
@@ -233,6 +258,7 @@ func _respawn(p: InkPlayer) -> void:
 		for x in range(p.home.x - rad, p.home.x + rad + 1):
 			if in_bounds(x, y):
 				grid[idx(x, y)] = p.id
+	_bb_mark(p.id, p.home.x - rad, p.home.y - rad, p.home.x + rad, p.home.y + rad)
 	_dirty_owners[p.id] = true
 
 func _any_land_spot() -> Vector2i:
@@ -294,12 +320,16 @@ func _process(delta: float) -> void:
 				_think_tick()
 			if state == State.PLAYING:
 				_move_actors(minf(delta, 1.0 / 30.0))
+				_retrace_step()           # ≤1 owner per frame — no commit spikes
 				_info_acc += delta
-				if _info_acc >= 0.1:      # counts + minimap + territory at 10 Hz
+				if _info_acc >= 0.25:     # counts/leaderboard at 4 Hz is plenty
 					_info_acc = 0.0
 					_update_info()
+				_map_acc += delta
+				if _map_dirty and _map_acc >= 0.4:
+					_map_acc = 0.0
+					_map_dirty = false
 					_minimap.refresh()
-					_refresh_territory()
 			_age_fx(delta)
 			_update_camera(delta)
 			queue_redraw()
@@ -338,16 +368,12 @@ func _move_actors(dt: float) -> void:
 		p.pos += Vector2.from_angle(p.heading) * SPEED * dt
 		p.dir = _cardinal(p.heading)          # bots' brain works in cardinals
 
-		# Board edge: sliding is fine inside your land, fatal mid-trail.
+		# Board edge and coastline are WALLS, never death (original rules):
+		# you slide along them — riding the border to seal off a corner is a
+		# legitimate, satisfying capture strategy.
 		var m := CELL * 0.5
-		var clamped := Vector2(clampf(p.pos.x, m, W * CELL - m),
+		p.pos = Vector2(clampf(p.pos.x, m, W * CELL - m),
 			clampf(p.pos.y, m, H * CELL - m))
-		if clamped != p.pos:
-			p.pos = clamped
-			if p.is_out:
-				_kill(p, null, "wall")
-				continue
-		# Coastline: water is out of bounds too — slide along it if possible.
 		if not land(int(p.pos.x / CELL), int(p.pos.y / CELL)):
 			var sx := Vector2(p.pos.x, old_pos.y)
 			var sy := Vector2(old_pos.x, p.pos.y)
@@ -357,9 +383,6 @@ func _move_actors(dt: float) -> void:
 				p.pos = sy
 			else:
 				p.pos = old_pos
-			if p.is_out:
-				_kill(p, null, "wall")
-				continue
 		# Cell-entry events (one axis at a time — no corner skipping).
 		var nx := int(p.pos.x / CELL)
 		var ny := int(p.pos.y / CELL)
@@ -424,15 +447,34 @@ func _kill(p: InkPlayer, killer: InkPlayer, cause: String) -> void:
 	for c in p.trail:
 		trail_owner[idx(c.x, c.y)] = 0
 	p.trail.clear()
+	p.trail_rev = -1
 	p.is_out = false
 	if p.is_human:
 		_human_died(cause, killer)      # land stays put (revive keeps it)
 		return
 	p.alive = false
 	p.respawn_in = RESPAWN
-	for i in grid.size():               # bot land goes neutral, up for grabs
+	# Original rule: the victim's WHOLE empire falls to the killer.
+	var heir := 0
+	if killer != null and killer.alive and killer != p:
+		heir = killer.id
+	var got := 0
+	for i in grid.size():
 		if grid[i] == p.id:
-			grid[i] = 0
+			grid[i] = heir
+			got += 1
+	if heir != 0:
+		if _bb_lo.size() >= p.id and _bb_hi[p.id - 1].x >= _bb_lo[p.id - 1].x:
+			_bb_mark(heir, _bb_lo[p.id - 1].x, _bb_lo[p.id - 1].y,
+				_bb_hi[p.id - 1].x, _bb_hi[p.id - 1].y)
+		_dirty_owners[heir] = true
+		if killer.is_human and got > 0:
+			_add_text_fx(_cell_center(p.cx, p.cy) - Vector2(0, CELL * 1.4),
+				"+%.1f%%" % (got * 100.0 / float(_land_total)),
+				killer.color.darkened(0.2))
+	if _bb_lo.size() >= p.id:
+		_bb_lo[p.id - 1] = Vector2i(W, H)
+		_bb_hi[p.id - 1] = Vector2i(-1, -1)
 	_dirty_owners[p.id] = true
 	_add_ring_fx(_cell_center(p.cx, p.cy), p.color)
 	if _on_screen(_cell_center(p.cx, p.cy)):
@@ -442,6 +484,10 @@ func _kill(p: InkPlayer, killer: InkPlayer, cause: String) -> void:
 
 func _commit(p: InkPlayer) -> void:
 	# 1. The trail itself becomes owned land.
+	var tx0 := W
+	var ty0 := H
+	var tx1 := -1
+	var ty1 := -1
 	for c in p.trail:
 		var i := idx(c.x, c.y)
 		var prev := grid[i]
@@ -449,54 +495,75 @@ func _commit(p: InkPlayer) -> void:
 			_dirty_owners[prev] = true      # stolen from — retrace them too
 		grid[i] = p.id
 		trail_owner[i] = 0
+		tx0 = mini(tx0, c.x)
+		ty0 = mini(ty0, c.y)
+		tx1 = maxi(tx1, c.x)
+		ty1 = maxi(ty1, c.y)
+	if tx1 >= tx0:
+		_bb_mark(p.id, tx0, ty0, tx1, ty1)
 	p.trail.clear()
+	p.trail_rev = -1
 	_dirty_owners[p.id] = true
 
 	# 2. Flood the "outside" from the border through every non-owned cell.
 	#    Whatever the flood can't reach is enclosed -> it becomes ours.
-	var visited := PackedByteArray()
-	visited.resize(W * H)
+	#    Water is pre-marked visited (native copy) so it stays a hard wall,
+	#    and the static coast list replaces the old full-grid seed pass.
+	var visited := _water_visited.duplicate()
 	var stack: Array[int] = []
-	# Seeds: every non-owner LAND cell touching water or the board edge (the
-	# coastline is the wall of this arena).
-	for y in range(H):
-		for x in range(W):
-			var i2 := idx(x, y)
-			if _land[i2] == 0:
-				visited[i2] = 1          # water is never captured
-				continue
-			if x == 0 or y == 0 or x == W - 1 or y == H - 1 \
-					or _land[idx(x - 1, y)] == 0 or _land[idx(x + 1, y)] == 0 \
-					or _land[idx(x, y - 1)] == 0 or _land[idx(x, y + 1)] == 0:
-				_seed(i2, p.id, visited, stack)
+	for ci in _coast_seeds:
+		_seed(ci, p.id, visited, stack)
 
 	while not stack.is_empty():
 		var i: int = stack.pop_back()
 		var x := i % W
+		@warning_ignore("integer_division")
 		var y := i / W
-		for d: Vector2i in [Vector2i.UP, Vector2i.DOWN, Vector2i.LEFT, Vector2i.RIGHT]:
-			var ax := x + d.x
-			var ay := y + d.y
-			if not in_bounds(ax, ay):
-				continue
-			var ai := idx(ax, ay)
+		if y > 0:
+			var ai := i - W
 			if visited[ai] == 0 and grid[ai] != p.id:
 				visited[ai] = 1
 				stack.append(ai)
+		if y < H - 1:
+			var ai2 := i + W
+			if visited[ai2] == 0 and grid[ai2] != p.id:
+				visited[ai2] = 1
+				stack.append(ai2)
+		if x > 0:
+			var ai3 := i - 1
+			if visited[ai3] == 0 and grid[ai3] != p.id:
+				visited[ai3] = 1
+				stack.append(ai3)
+		if x < W - 1:
+			var ai4 := i + 1
+			if visited[ai4] == 0 and grid[ai4] != p.id:
+				visited[ai4] = 1
+				stack.append(ai4)
 
 	var gained := 0
+	var gx0 := W
+	var gy0 := H
+	var gx1 := -1
+	var gy1 := -1
 	for i in range(W * H):
 		if visited[i] == 0 and grid[i] != p.id:
 			if grid[i] != 0:
 				_dirty_owners[grid[i]] = true
 			grid[i] = p.id
 			gained += 1
-	if gained > 0:
-		_refresh_territory()          # show the claim instantly
+			var cx := i % W
+			@warning_ignore("integer_division")
+			var cy := i / W
+			gx0 = mini(gx0, cx)
+			gy0 = mini(gy0, cy)
+			gx1 = maxi(gx1, cx)
+			gy1 = maxi(gy1, cy)
+	if gx1 >= gx0:
+		_bb_mark(p.id, gx0, gy0, gx1, gy1)
 	if gained > 0 and p.is_human:
 		Sfx.play("capture", 0.9 + randf() * 0.2)
 		Sfx.haptic(25)
-		var pct := gained * 100.0 / float(W * H)
+		var pct := gained * 100.0 / float(_land_total)
 		_add_text_fx(_head_visual(p) - Vector2(0, CELL * 1.4),
 			"+%.1f%%" % pct, p.color.darkened(0.2))
 
@@ -682,14 +749,21 @@ func _axis_dir(p: InkPlayer, target: Vector2i) -> Vector2i:
 func _nearest_owned(p: InkPlayer) -> Vector2i:
 	var best := Vector2i(-1, -1)
 	var best_d := 999999
-	for i in grid.size():
-		if grid[i] == p.id:
-			var x := i % W
-			var y := i / W
-			var d: int = absi(x - p.cx) + absi(y - p.cy)
-			if d < best_d:
-				best_d = d
-				best = Vector2i(x, y)
+	# All owned cells live inside the tracked bounding box — scan only that.
+	if _bb_lo.size() < p.id or _bb_hi[p.id - 1].x < _bb_lo[p.id - 1].x:
+		return best
+	var x0 := maxi(_bb_lo[p.id - 1].x, 0)
+	var y0 := maxi(_bb_lo[p.id - 1].y, 0)
+	var x1 := mini(_bb_hi[p.id - 1].x, W - 1)
+	var y1 := mini(_bb_hi[p.id - 1].y, H - 1)
+	for y in range(y0, y1 + 1):
+		var row := y * W
+		for x in range(x0, x1 + 1):
+			if grid[row + x] == p.id:
+				var d: int = absi(x - p.cx) + absi(y - p.cy)
+				if d < best_d:
+					best_d = d
+					best = Vector2i(x, y)
 	return best
 
 # -------------------------------------------------------------------- input --
@@ -749,6 +823,7 @@ func _human_died(cause: String, killer: InkPlayer) -> void:
 		human.is_out = false      # DEMO/store: invincible, keep painting
 		return
 	human.alive = false
+	_refresh_territory()          # board under the panel shows the true state
 	state = State.OVER
 	Sfx.play("death")
 	Sfx.haptic(140)
@@ -766,6 +841,7 @@ func _human_died(cause: String, killer: InkPlayer) -> void:
 		Ads.maybe_interstitial(func() -> void: _show_results(subtitle, false))
 
 func _round_won() -> void:
+	_refresh_territory()          # final claim must be fully painted
 	state = State.OVER
 	Sfx.play("coin")
 	Sfx.haptic(80)
@@ -785,8 +861,15 @@ func _revive() -> void:
 		human.home = spot
 		for y in range(spot.y - START_RADIUS, spot.y + START_RADIUS + 1):
 			for x in range(spot.x - START_RADIUS, spot.x + START_RADIUS + 1):
-				if in_bounds(x, y):
+				if in_bounds(x, y) and _land[idx(x, y)] == 1:
+					var pv := grid[idx(x, y)]
+					if pv != 0 and pv != human.id:
+						_dirty_owners[pv] = true
 					grid[idx(x, y)] = human.id
+		_bb_mark(human.id, spot.x - START_RADIUS, spot.y - START_RADIUS,
+			spot.x + START_RADIUS, spot.y + START_RADIUS)
+		_dirty_owners[human.id] = true
+		_refresh_territory()          # revived land must be visible instantly
 	else:
 		human.home = spot
 	human.cx = spot.x
@@ -796,6 +879,7 @@ func _revive() -> void:
 	_human_has_target = false
 	human.is_out = false
 	human.trail.clear()
+	human.trail_rev = -1
 	human.pending_dir = Vector2i.ZERO
 	if cam != null:
 		cam.position = _cell_center(spot.x, spot.y)
@@ -823,7 +907,7 @@ func _retry() -> void:
 # ------------------------------------------------------------------ results --
 
 func _you_pct() -> float:
-	return _counts[1] * 100.0 / float(W * H) if _counts.size() > 1 else 0.0
+	return _counts[1] * 100.0 / float(_land_total) if _counts.size() > 1 else 0.0
 
 func _show_continue_offer(subtitle: String) -> void:
 	_dim.visible = true
@@ -928,8 +1012,8 @@ func _age_fx(delta: float) -> void:
 func _update_info() -> void:
 	for i in _counts.size():
 		_counts[i] = 0
-	for i in grid.size():
-		_counts[grid[i]] += 1
+	for p in players:
+		_counts[p.id] = grid.count(p.id)   # native pass — no GDScript loop
 	var total := float(_land_total)
 	var you := _counts[1] * 100.0 / total
 	_max_pct = maxf(_max_pct, you)
@@ -963,7 +1047,7 @@ func _update_info() -> void:
 			tr("T_NEW_BEST"), Ui.GOLD.darkened(0.1))
 		Sfx.play("coin")
 		Sfx.haptic(40)
-	if state == State.PLAYING and you >= 99.95:
+	if state == State.PLAYING and you >= 99.5:
 		_round_won()
 
 func _build_hud() -> void:
@@ -1195,9 +1279,10 @@ func _build_results_panel() -> PanelContainer:
 
 # ------------------------------------------------------------------- render --
 
-## Retrace the vector outlines of every territory whose cells changed.
+## Drain the whole retrace queue at once (initial build / round-end paths).
 func _refresh_territory() -> void:
-	_retrace_territories()
+	while _rt_oid != 0 or not _dirty_owners.is_empty():
+		_retrace_step()
 
 
 ## --- Vector territory rendering (the real paper.io-2 look) ------------------
@@ -1217,12 +1302,34 @@ func _build_territory_layers() -> void:
 	add_child(bg)
 	var bt := Game.country_tint()
 	_paper = Color(0.955 * bt.r, 0.985 * bt.g, 0.965 * bt.b)
+	# All territory polygons live in cached Polygon2D nodes (triangulated once
+	# per retrace, NOT every frame — that per-frame earcut was the jank).
+	_terr_root = Node2D.new()
+	_terr_root.z_index = -1
+	add_child(_terr_root)
+	_retrace_land()
+	for lp in _land_loops:
+		if not lp.hole:
+			var lsh := Polygon2D.new()
+			lsh.polygon = lp.spts
+			lsh.color = Color(0.14, 0.32, 0.38, 0.18)
+			lsh.antialiased = true
+			_terr_root.add_child(lsh)
+	for lp in _land_loops:
+		var lf := Polygon2D.new()
+		lf.polygon = lp.pts
+		lf.color = WATER if lp.hole else _paper
+		lf.antialiased = true
+		_terr_root.add_child(lf)
+	_land_child_count = _terr_root.get_child_count()
 	_terr_loops.clear()
+	_pnodes.clear()
 	for k in players.size():
 		_terr_loops.append([])
-	_retrace_land()
-	for p in players:
-		_dirty_owners[p.id] = true
+		var nd := Node2D.new()
+		_pnodes.append(nd)
+		_terr_root.add_child(nd)
+		_dirty_owners[k + 1] = true
 
 ## The coast is rendered from the SOURCE silhouette polygon, not from the
 ## rasterized cell mask — that keeps it silky at any zoom. The mask is only
@@ -1249,33 +1356,100 @@ func _retrace_land() -> void:
 		spts.append(q + Vector2(0, EXTRUDE + 4.0))
 	_land_loops = [{"pts": smooth, "spts": spts, "hole": false}]
 
-## One grid pass collects boundary edges for every dirty owner at once.
-func _retrace_territories() -> void:
-	if _dirty_owners.is_empty():
-		return
+## Advance the incremental retracer: start a queued owner if idle, then trace
+## up to RT_ROWS grid rows. Finishing an owner swaps its cached polygons in
+## and TIGHTENS its bounding box to what the scan actually saw (boxes only
+## ever grow otherwise — that would decay into full-map scans late game).
+## If the owner's cells change mid-scan it is re-queued, so we abort and
+## restart fresh — never chain segments from two different grid states.
+func _retrace_step() -> void:
+	if _rt_oid != 0 and _dirty_owners.has(_rt_oid):
+		_rt_oid = 0
+	if _rt_oid == 0:
+		if _dirty_owners.is_empty():
+			return
+		var oid: int = _dirty_owners.keys()[0]
+		_dirty_owners.erase(oid)
+		_rt_oid = oid
+		_rt_segs = {}
+		_rt_t0 = Vector2i(W, H)
+		_rt_t1 = Vector2i(-1, -1)
+		if _bb_lo.size() >= oid and _bb_hi[oid - 1].x >= _bb_lo[oid - 1].x:
+			_rt_x0 = maxi(_bb_lo[oid - 1].x, 0)
+			_rt_y = maxi(_bb_lo[oid - 1].y, 0)
+			_rt_x1 = mini(_bb_hi[oid - 1].x, W - 1)
+			_rt_y1 = mini(_bb_hi[oid - 1].y, H - 1)
+		else:
+			_rt_y = 1
+			_rt_y1 = 0          # empty range — finishes immediately
 	var stride := W + 1
-	var segs := {}
-	for oid in _dirty_owners.keys():
-		segs[oid] = {}
-	for y in H:
+	var rows := 0
+	while _rt_y <= _rt_y1 and rows < RT_ROWS:
+		var y := _rt_y
 		var row := y * W
-		for x in W:
-			var o := grid[row + x]
-			if o == 0 or not segs.has(o):
+		for x in range(_rt_x0, _rt_x1 + 1):
+			if grid[row + x] != _rt_oid:
 				continue
-			var d: Dictionary = segs[o]
+			_rt_t0 = Vector2i(mini(_rt_t0.x, x), mini(_rt_t0.y, y))
+			_rt_t1 = Vector2i(maxi(_rt_t1.x, x), maxi(_rt_t1.y, y))
 			var tl := y * stride + x
-			if y == 0 or grid[row + x - W] != o:
-				_seg_add(d, tl, tl + 1)
-			if x == W - 1 or grid[row + x + 1] != o:
-				_seg_add(d, tl + 1, tl + stride + 1)
-			if y == H - 1 or grid[row + x + W] != o:
-				_seg_add(d, tl + stride + 1, tl + stride)
-			if x == 0 or grid[row + x - 1] != o:
-				_seg_add(d, tl + stride, tl)
-	for oid in segs.keys():
-		_terr_loops[oid - 1] = _chain_loops(segs[oid])
-	_dirty_owners.clear()
+			if y == 0 or grid[row + x - W] != _rt_oid:
+				_seg_add(_rt_segs, tl, tl + 1)
+			if x == W - 1 or grid[row + x + 1] != _rt_oid:
+				_seg_add(_rt_segs, tl + 1, tl + stride + 1)
+			if y == H - 1 or grid[row + x + W] != _rt_oid:
+				_seg_add(_rt_segs, tl + stride + 1, tl + stride)
+			if x == 0 or grid[row + x - 1] != _rt_oid:
+				_seg_add(_rt_segs, tl + stride, tl)
+		_rt_y += 1
+		rows += 1
+	if _rt_y > _rt_y1:
+		_terr_loops[_rt_oid - 1] = _chain_loops(_rt_segs)
+		_rebuild_owner_node(_rt_oid)
+		if _bb_lo.size() >= _rt_oid:
+			_bb_lo[_rt_oid - 1] = _rt_t0
+			_bb_hi[_rt_oid - 1] = _rt_t1
+		_rt_oid = 0
+		_rt_segs = {}
+		_map_dirty = true
+		_reorder_nodes()
+
+## Swap the cached polygons of one owner for its freshly traced loops.
+func _rebuild_owner_node(oid: int) -> void:
+	var node := _pnodes[oid - 1]
+	for c in node.get_children():
+		c.queue_free()
+	var p := players[oid - 1]
+	var loops: Array = _terr_loops[oid - 1]
+	for tp in loops:
+		if not tp.hole:
+			var sh := Polygon2D.new()
+			sh.polygon = tp.spts
+			sh.color = p.color.darkened(0.36)
+			sh.antialiased = true
+			node.add_child(sh)
+	for tp in loops:
+		var f := Polygon2D.new()
+		f.polygon = tp.pts
+		f.color = _paper if tp.hole else p.color
+		f.antialiased = true
+		node.add_child(f)
+
+## Big empires draw first so a small blob inside a pocket stays visible.
+func _reorder_nodes() -> void:
+	var order: Array = range(players.size())
+	order.sort_custom(func(a, b): return _counts[a + 1] > _counts[b + 1])
+	for pos in order.size():
+		_terr_root.move_child(_pnodes[order[pos]], pos + _land_child_count)
+
+## Grow a player's territory bounding box to include the given cell rect.
+func _bb_mark(oid: int, x0: int, y0: int, x1: int, y1: int) -> void:
+	while _bb_lo.size() < oid:
+		_bb_lo.append(Vector2i(W, H))
+		_bb_hi.append(Vector2i(-1, -1))
+	var i := oid - 1
+	_bb_lo[i] = Vector2i(mini(_bb_lo[i].x, x0), mini(_bb_lo[i].y, y0))
+	_bb_hi[i] = Vector2i(maxi(_bb_hi[i].x, x1), maxi(_bb_hi[i].y, y1))
 
 static func _seg_add(d: Dictionary, a: int, b: int) -> void:
 	if d.has(a):
@@ -1293,6 +1467,7 @@ func _chain_loops(segs: Dictionary) -> Array:
 		var loop := PackedInt32Array()
 		var cur := start
 		var prev_dir := Vector2.ZERO
+		var closed := false
 		while true:
 			loop.append(cur)
 			var ends: Array = segs[cur]
@@ -1312,9 +1487,12 @@ func _chain_loops(segs: Dictionary) -> Array:
 				segs.erase(cur)
 			prev_dir = Vector2(_key_dir(cur, nxt, stride)).normalized()
 			cur = nxt
-			if cur == start or not segs.has(cur):
+			if cur == start:
+				closed = true
 				break
-		if loop.size() >= 4:
+			if not segs.has(cur):
+				break     # broken chain — drop it, never draw garbage
+		if closed and loop.size() >= 4:
 			out.append(_finish_loop(loop, stride))
 	return out
 
@@ -1342,6 +1520,10 @@ func _finish_loop(keys: PackedInt32Array, stride: int) -> Dictionary:
 			pts.append(raw[i])
 	if pts.size() < 3:
 		pts = raw
+	# ...collapse cell staircases into true diagonals (the last "Stufen")...
+	var simplified := _rdp_closed(pts, 6.0)
+	if simplified.size() >= 3:
+		pts = simplified
 	# ...then cut every corner generously and silken it with Chaikin.
 	var m := pts.size()
 	var rounded := PackedVector2Array()
@@ -1359,6 +1541,48 @@ func _finish_loop(keys: PackedInt32Array, stride: int) -> Dictionary:
 	for q in smooth:
 		spts.append(q + Vector2(0, EXTRUDE))
 	return {"pts": smooth, "spts": spts, "hole": area < 0.0}
+
+## Ramer-Douglas-Peucker on a closed loop (first point doubles as anchor).
+## eps just over half a cell melts 1-cell staircases into clean diagonals
+## while keeping every feature bigger than a cell.
+static func _rdp_closed(pts: PackedVector2Array, eps: float) -> PackedVector2Array:
+	var n := pts.size()
+	if n < 5:
+		return pts
+	var work := pts.duplicate()
+	work.append(pts[0])
+	var keep := PackedByteArray()
+	keep.resize(n + 1)
+	keep[0] = 1
+	keep[n] = 1
+	var stack: Array[Vector2i] = [Vector2i(0, n)]
+	while not stack.is_empty():
+		var seg: Vector2i = stack.pop_back()
+		var a := work[seg.x]
+		var b := work[seg.y]
+		var ab := b - a
+		var len2 := ab.length_squared()
+		var far := -1.0
+		var fidx := -1
+		for i in range(seg.x + 1, seg.y):
+			var d: float
+			if len2 < 0.0001:
+				d = work[i].distance_to(a)
+			else:
+				var t := clampf((work[i] - a).dot(ab) / len2, 0.0, 1.0)
+				d = work[i].distance_to(a + ab * t)
+			if d > far:
+				far = d
+				fidx = i
+		if far > eps and fidx > 0:
+			keep[fidx] = 1
+			stack.append(Vector2i(seg.x, fidx))
+			stack.append(Vector2i(fidx, seg.y))
+	var out := PackedVector2Array()
+	for i in n:
+		if keep[i] == 1:
+			out.append(work[i])
+	return out
 
 static func _chaikin_closed(pts: PackedVector2Array) -> PackedVector2Array:
 	var n := pts.size()
@@ -1398,6 +1622,20 @@ func _build_land_mask() -> void:
 			if inside:
 				_land_total += 1
 	_land_total = maxi(_land_total, 1)
+	# Static flood helpers: water-as-wall mask + coastal seed cells.
+	_water_visited.resize(W * H)
+	_coast_seeds.clear()
+	for y in H:
+		for x in W:
+			var i := idx(x, y)
+			if _land[i] == 0:
+				_water_visited[i] = 1
+				continue
+			_water_visited[i] = 0
+			if x == 0 or y == 0 or x == W - 1 or y == H - 1 \
+					or _land[idx(x - 1, y)] == 0 or _land[idx(x + 1, y)] == 0 \
+					or _land[idx(x, y - 1)] == 0 or _land[idx(x, y + 1)] == 0:
+				_coast_seeds.append(i)
 
 func land(x: int, y: int) -> bool:
 	return in_bounds(x, y) and _land[idx(x, y)] == 1
@@ -1412,51 +1650,36 @@ func _visible_cells() -> Rect2i:
 	return Rect2i(x0, y0, x1 - x0, y1 - y0)
 
 func _draw() -> void:
-	# Country slab: smooth vector coastline, soft drop shadow, flat paper top.
-	for lp in _land_loops:
-		if not lp.hole:
-			draw_colored_polygon(lp.spts, Color(0.14, 0.32, 0.38, 0.18))
-	for lp in _land_loops:
-		draw_colored_polygon(lp.pts, WATER if lp.hole else _paper)
-
-	# Territories — jelly slabs: dark extruded side below, colour on top.
-	# Big empires first so a small blob inside someone's pocket stays visible.
-	var order: Array = range(players.size())
-	order.sort_custom(func(a, b): return _counts[a + 1] > _counts[b + 1])
-	for k in order:
-		var p := players[k]
-		var loops: Array = _terr_loops[k]
-		for tp in loops:
-			if not tp.hole:
-				draw_colored_polygon(tp.spts, p.color.darkened(0.36))
-		for tp in loops:
-			draw_colored_polygon(tp.pts, _paper if tp.hole else p.color)
-
-
-	# Active trails: one continuous rounded ribbon per player, glued to the
-	# interpolated head so the line flows instead of stepping.
+	# Water/land/territory live in cached Polygon2D layers below (z -1/-2) —
+	# triangulated once per retrace, not every frame.
+	# Active trails: one continuous rounded ribbon per player, ending exactly
+	# AT the head — never ahead of it. The settled part of the curve is cached
+	# and only rebuilt when a new cell joins the trail.
 	for p in players:
 		if p.trail.is_empty():
 			continue
+		if p.trail.size() != p.trail_rev:
+			p.trail_rev = p.trail.size()
+			var cs := PackedVector2Array()
+			for j in p.trail.size() - 1:      # newest cell excluded — the head
+				cs.append(_cell_center(p.trail[j].x, p.trail[j].y))
+			p.trail_smooth = _chaikin(_chaikin(cs))
+		var pts := p.trail_smooth.duplicate()
+		if p.alive and p.is_out:
+			pts.append(_head_visual(p))
 		var main_c: Color = p.color.lightened(0.30)
 		var rim_c: Color = p.color.darkened(0.16)
 		var w := TRAIL_W
-		var pts := PackedVector2Array()
-		for c in p.trail:
-			pts.append(_cell_center(c.x, c.y))
-		if p.alive and p.is_out:
-			pts.append(_head_visual(p))
-		pts = _chaikin(_chaikin(pts))     # smooth curve — no stair-steps
 		if pts.size() >= 2:
 			var lo := PackedVector2Array()
 			for q in pts:
 				lo.append(q + Vector2(0, 5))     # extruded jelly side
 			draw_circle(lo[0], w * 0.5, rim_c)
 			draw_circle(lo[lo.size() - 1], w * 0.5, rim_c)
-			draw_polyline(lo, rim_c, w)
+			draw_polyline(lo, rim_c, w, true)
 			draw_circle(pts[0], w * 0.5, main_c)
 			draw_circle(pts[pts.size() - 1], w * 0.5, main_c)
-			draw_polyline(pts, main_c, w)
+			draw_polyline(pts, main_c, w, true)
 		elif pts.size() == 1:
 			draw_circle(pts[0], w * 0.5, main_c)
 
