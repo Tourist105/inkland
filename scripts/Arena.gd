@@ -321,8 +321,10 @@ func _respawn(p: InkPlayer) -> void:
 			p.respawn_in = RESPAWN
 			return
 		p.home = spot
+		# A returning rival reads as a NEW player — fresh name (and, in Blitz,
+		# a fresh ink colour). Keeps a long map lively.
+		p.display_name = BOT_NAMES[randi() % BOT_NAMES.size()]
 		if Game.blitz:
-			# Blitz: rivals return as a FRESH ink colour, like a new player.
 			_blitz_color = (_blitz_color + 1) % BOT_COLORS.size()
 			p.color = BOT_COLORS[_blitz_color]
 			_dirty_owners[p.id] = true
